@@ -17,7 +17,7 @@ function App() {
   const [cognitiveState, setCognitiveState] = useState<CognitiveStateRaw>({
     flow: 0.1,
     incubation: 0.1,
-    stuck: 0.8, // Default for testing
+    stuck: 0.0, // Default to neutral/low stuck
   });
   const [isWallActive, setIsWallActive] = useState(false);
 

@@ -31,6 +31,11 @@ fn get_cognitive_state(state: State<CognitiveStateEngine>) -> HashMap<String, f6
     map
 }
 
+#[tauri::command]
+fn quit_app() {
+    std::process::exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize Sensing Layer
@@ -56,7 +61,7 @@ pub fn run() {
                     engine_for_thread.update(ft);
                     
                     // Optional logging
-                    // println!("FT: {:.2}, State: {:?}", ft, engine_for_thread.get_current_state());
+                    println!("FT: {:.2}, State: {:?}", ft, engine_for_thread.get_current_state());
                 }
             }
         }
@@ -82,24 +87,6 @@ pub fn run() {
         .setup(|app| {
             use tauri::{WebviewWindowBuilder, WebviewUrl};
 
-            // Create Overlay Window (Transparent, Click-through)
-            #[cfg(desktop)]
-            let _overlay = WebviewWindowBuilder::new(
-                app,
-                "overlay",
-                WebviewUrl::App("index.html".into())
-            )
-            .title("GSE Overlay")
-            .transparent(true)
-            .decorations(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .maximized(true)
-            .build()?;
-
-            #[cfg(desktop)]
-            _overlay.set_ignore_cursor_events(true)?;
-
             // Initialize Sensors (Phase 4)
             let sensor_manager = SensorManager::new(app.handle().clone());
             sensor_manager.start_monitoring();
@@ -107,7 +94,7 @@ pub fn run() {
             Ok(())
         })
         .manage(engine) // Manage the engine state for commands
-        .invoke_handler(tauri::generate_handler![greet, get_cognitive_state])
+        .invoke_handler(tauri::generate_handler![greet, get_cognitive_state, quit_app])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

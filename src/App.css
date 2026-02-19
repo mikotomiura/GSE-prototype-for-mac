@@ -25,33 +25,150 @@ body {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+  background-color: transparent;
+  /* Fix: Remove global background */
 }
 
 /* Dashboard Styles */
 .dashboard-container {
-  padding: 2rem;
+  padding: 0;
+  /* Remove padding here, handle in content */
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  box-sizing: border-box;
+  background-color: rgba(15, 23, 42, 0.95);
+  /* Main Widget Background */
+  border-radius: 16px;
+  /* Rounded corners for widget */
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  /* Clip content to border radius */
+}
+
+.dashboard-content {
+  padding: 0.5rem;
+  /* Further reduced from 1rem */
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1.5rem;
-  height: 100vh;
-  box-sizing: border-box;
+  gap: 0.5rem;
+  /* Reduced gap */
+  flex-grow: 1;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.dashboard-content h2 {
+  font-size: 1.2rem;
+  margin: 0.5rem 0;
+}
+
+/* Custom Scrollbar */
+.dashboard-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.dashboard-content::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.dashboard-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+}
+
+.dashboard-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* Custom Title Bar */
+.title-bar {
+  height: 32px;
+  display: flex;
+  justify-content: flex-end;
+  /* Align controls to right */
+  align-items: center;
+  background: rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  z-index: 1000;
+  /* Ensure title bar is above content */
+  cursor: grab;
+  /* Indicate draggable */
+}
+
+.title-bar:active {
+  cursor: grabbing;
+}
+
+.drag-region {
+  flex-grow: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding-left: 12px;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.5);
+  user-select: none;
+  /* Make sure this element can be dragged */
+  -webkit-app-region: drag;
+  /* For Electron-like behavior if supported, mainly relied on data-tauri-drag-region in HTML */
+}
+
+.window-controls {
+  display: flex;
+  height: 100%;
+  /* -webkit-app-region: no-drag;  Deprecated/Conflicting? */
+  z-index: 9999;
+  /* Ensure controls are above everything */
+  pointer-events: auto;
+  /* Force pointer events */
+}
+
+.control-btn {
+  width: 40px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.7);
+  transition: background 0.2s;
+}
+
+.control-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.control-btn.close:hover {
+  background: #ef4444;
+  /* Red for close */
 }
 
 .state-card {
-  padding: 1rem 2rem;
+  padding: 0.5rem;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.1);
   backdrop-filter: blur(10px);
   text-align: center;
   border: 1px solid rgba(255, 255, 255, 0.1);
+  width: 90%;
+  /* Ensure it fits within container with margin */
+  margin-bottom: 0.5rem;
 }
 
 .dominant-state {
   display: block;
-  font-size: 2.5rem;
+  font-size: 1.8rem;
+  /* Slightly smaller */
   font-weight: 700;
-  margin-top: 0.5rem;
+  margin-top: 0.25rem;
+  white-space: nowrap;
+  /* Prevent wrapping if possible, or handle overflow */
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dashboard-container.state-flow .dominant-state {
@@ -68,22 +185,36 @@ body {
 
 .metrics-container {
   width: 100%;
-  max-width: 400px;
+  /* Removed max-width 400px as window is 360px */
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.5rem;
+  /* Compact gap */
+  font-size: 0.9rem;
+  /* Slightly smaller text */
 }
 
 .metric-row {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.5rem;
 }
 
 .metric-row label {
-  width: 100px;
+  width: 70px;
+  /* Adjusted */
   text-align: right;
   font-weight: 500;
+  flex-shrink: 0;
+  /* Prevent shrinking */
+}
+
+.metric-row span {
+  width: 50px;
+  /* Increased from 45px to fit 100.0% */
+  text-align: right;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .progress-bar-bg {
@@ -113,9 +244,10 @@ body {
 
 .info-box {
   margin-top: auto;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   opacity: 0.7;
   text-align: center;
+  padding: 0 0.5rem;
 }
 
 /* Overlay Styles */
