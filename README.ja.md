@@ -1,5 +1,7 @@
 # GSE (Generative Struggle Engine) Prototype v2
 
+[🇺🇸 English (英語)](./README.md) | [🇯🇵 Japanese](./README.ja.md)
+
 GSE (Generative Struggle Engine) は、コーディングや執筆などの創造的作業におけるユーザーの**内面的認知状態 (Cognitive State)** をリアルタイムに推定・可視化し、最適な状態へ誘導するための実験的システムです。
 キーストロークの動的特徴（入力リズムや修正パターン）を分析し、ユーザーが「集中（Flow）」「思考（Incubation）」「停滞（Stuck）」のどの状態にあるかを判定します。
 

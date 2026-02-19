@@ -1,5 +1,7 @@
 # GSE (Generative Struggle Engine) Prototype v2
 
+[🇯🇵 Japanese (日本語)](./README.ja.md) | [🇺🇸 English](./README.md)
+
 GSE is an experimental system designed to monitor, visualize, and optimize a user's **Internal Cognitive State** during creative tasks (e.g., coding, writing). By analyzing keystroke dynamics in real-time, it infers whether the user is in a state of **Flow** (productivity), **Incubation** (thoughtful pause), or **Stuck** (frustration/blockage) and provides subtle visual feedback to guide them back to an optimal state.
 
 ## 🌟 Key Features
