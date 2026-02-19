@@ -32,7 +32,7 @@ impl<R: Runtime> SensorManager<R> {
             let accel_result = Accelerometer::GetDefault();
             match accel_result {
                 Ok(accel) => {
-                    println!("Accelerometer detected.");
+                    tracing::info!("Accelerometer detected.");
                     // Set Report Interval (approx 60Hz -> 16ms)
                     let min_interval = accel.MinimumReportInterval().unwrap_or(16);
                     let target_interval = std::cmp::max(min_interval, 16);
@@ -74,7 +74,7 @@ impl<R: Runtime> SensorManager<R> {
                     }
                 }
                 _ => {
-                    println!("No Accelerometer found (Fallback mode).");
+                    tracing::warn!("No Accelerometer found (Fallback mode).");
                 }
             }
         });
@@ -120,7 +120,7 @@ impl<R: Runtime> SensorManager<R> {
                      }
                  }
             } else {
-                println!("Geolocator not available.");
+                tracing::warn!("Geolocator not available.");
             }
         });
     }

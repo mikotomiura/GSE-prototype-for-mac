@@ -45,7 +45,7 @@ pub fn init_hook(sender: Sender<InputEvent>) {
                         let mut handle = (*HOOK_HANDLE).lock().unwrap();
                         *handle = Some(ThreadSafeHook(h));
                     }
-                    eprintln!("Keyboard hook installed");
+                    tracing::info!("Keyboard hook installed");
 
                     // Message loop is required for the hook to work
                     let mut msg = MSG::default();
@@ -55,7 +55,7 @@ pub fn init_hook(sender: Sender<InputEvent>) {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to install keyboard hook: {:?}", e);
+                    tracing::error!("Failed to install keyboard hook: {:?}", e);
                 }
             }
         }

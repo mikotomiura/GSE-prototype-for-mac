@@ -49,3 +49,7 @@ ort = { version = "2.0.0-rc.0", features = ["load-dynamic"] }
 # Utilities
 crossbeam-channel = "0.5"
 lazy_static = "1.4"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

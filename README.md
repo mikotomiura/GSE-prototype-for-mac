@@ -75,17 +75,21 @@ The core of GSE is the **Cognitive State Engine** (`engine.rs`), which implement
 2.  **Incubation**: Strategic pauses, idle time.
 3.  **Stuck**: Irregular rhythm, frequent corrections, short hesitation.
 
-### Logic Flow
-1.  **Input Capture**: `hook.rs` intercepts key press/release events globally.
-2.  **Feature Extraction**: `features.rs` calculates **Flight Time** (interval between key release and next press).
-3.  **HMM Update**: `engine.rs` updates state probabilities based on:
-    - **Time Discretization**: Flight times are categorized (e.g., <120ms = Speed, >1.5s = Stuck risk).
-    - **Transition Matrix**: Defines the likelihood of moving between states (e.g., Stuck → Stuck is "sticky").
-    - **Emission Matrix**: Defines the likelihood of observing a specific flight time in a given state.
-4.  **Special Heuristics**:
-    - **Backspace Override**: 3+ consecutive Backspaces force a high probability of **Stuck**.
-    - **Idle Detection**: >5s inactivity shifts probability towards **Incubation** (Idle) rather than Stuck.
-    - **IME Guard**: Inference is paused while the IME candidate window is active.
+78: ### Logic Flow
+79: 1.  **Input Capture**: `hook.rs` intercepts key press/release events globally.
+80: 2.  **Feature Extraction**: `features.rs` now calculates **6 Micro-Features (F1-F6)** over a 30-second sliding window:
+81:     - **F1 (Median Flight Time)**: Basic typing speed.
+82:     - **F2 (Flight Time Variance)**: Rhythm stability.
+83:     - **F3 (Correction Rate)**: Ratio of Backspace/Delete keys.
+84:     - **F4 (Burst Length)**: Average length of continuous typing bursts.
+85:     - **F5 (Pause Count)**: Number of pauses > 2 seconds.
+86:     - **F6 (Pause After Delete)**: Pauses immediately following a correction (strong high-cognitive-load signal).
+87: 3.  **HMM Update**: `engine.rs` computes a **Stuck Score (S_stuck)** based on these features and updates the HMM state probabilities.
+88:     - **Transition Matrix**: Redesigned to reduce state flickering.
+89:     - **Emission Matrix**: Maps `S_stuck` scores to observation bins.
+90: 4.  **Stability & Quality**:
+91:     - **Mutex Safety**: Replaced `unwrap()` with safe pattern matching to prevent thread panics.
+92:     - **Structured Logging**: Uses `tracing` crate for detailed diagnostic logs.
 
 ---
 

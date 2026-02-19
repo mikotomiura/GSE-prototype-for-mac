@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -12,22 +12,22 @@ interface CognitiveStateRaw {
   stuck: number;
 }
 
+// Lv1トリガー閾値: NudgeはOverlay.tsxで stuck>0.6 時に表示
+// Lv2トリガー閾値: Wallは stuck>0.7 が 30秒継続した際に表示
+const LV2_STUCK_THRESHOLD = 0.7;
+const LV2_TIMER_MS = 30_000;
+
 function App() {
-  const [windowLabel, setWindowLabel] = useState<string>("");
   const [cognitiveState, setCognitiveState] = useState<CognitiveStateRaw>({
     flow: 0.1,
     incubation: 0.1,
-    stuck: 0.8, // Default for testing
+    stuck: 0.8,
   });
   const [isWallActive, setIsWallActive] = useState(false);
 
-  // 1. Identify Window Label
-  useEffect(() => {
-    // Current window label
-    const label = getCurrentWindow().label;
-    setWindowLabel(label);
-    console.log("Window Label:", label);
-  }, []);
+  // D-1: getCurrentWindow() を useMemo でメモ化し不要な再生成を防止
+  const currentWindow = useMemo(() => getCurrentWindow(), []);
+  const windowLabel = currentWindow.label;
 
   // 2. Poll Cognitive State (Every 500ms)
   useEffect(() => {
@@ -43,14 +43,16 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // 3. Wall Logic (Stuck Persistence)
+  // 3. Intervention Layer ロジック
+  //    D-2: Lv1 (Nudge) は Overlay.tsx 側で stuck>0.6 時に即時表示済み
+  //    D-3: Lv2 (Ambient Fade/Wall) は stuck>LV2_STUCK_THRESHOLD が LV2_TIMER_MS 継続で発動
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
-    if (cognitiveState.stuck > 0.9 && !isWallActive) {
-      // If Stuck stays high for 3 seconds, activate wall
+    if (cognitiveState.stuck > LV2_STUCK_THRESHOLD && !isWallActive) {
+      // Stuck状態が閾値を超えたまま 30秒継続したら Wall (Lv2) を発動
       timer = setTimeout(() => {
         setIsWallActive(true);
-      }, 3000);
+      }, LV2_TIMER_MS);
     }
     return () => clearTimeout(timer);
   }, [cognitiveState.stuck, isWallActive]);
@@ -58,7 +60,6 @@ function App() {
   // 4. Sensor Integration (Unlock Logic)
   useEffect(() => {
     const unlisten = listen("sensor-accelerometer", (event) => {
-      console.log("Sensor Event:", event.payload);
       if (event.payload === "move") {
         setIsWallActive(false);
       }

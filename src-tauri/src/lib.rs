@@ -5,7 +5,7 @@ pub mod sensors;
 use std::collections::HashMap;
 use std::thread;
 use crossbeam_channel;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use crate::analysis::{engine::{CognitiveState, CognitiveStateEngine}, features::FeatureExtractor};
 use crate::sensors::SensorManager;
 
@@ -31,32 +31,46 @@ fn get_cognitive_state(state: State<CognitiveStateEngine>) -> HashMap<String, f6
     map
 }
 
+/// C-1: Tauri 2.0 準拠のクリーンシャットダウン
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize Sensing Layer
-    let (tx, rx) = crossbeam_channel::unbounded();
+    // tracing サブスクライバの初期化
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    // C-5: bounded チャンネル (64) を使用
+    let (tx, rx) = crossbeam_channel::bounded(64);
 
     // Initialize Inference Engine
     let engine = CognitiveStateEngine::new();
     let engine_for_thread = engine.clone();
-    let engine_for_monitor = engine.clone(); // Clone for IME monitor
+    let engine_for_monitor = engine.clone();
 
     // Start Analysis Thread
     thread::spawn(move || {
-        println!("Analysis thread started");
+        tracing::info!("Analysis thread started");
         let mut extractor = FeatureExtractor::new(600);
-        
+
         while let Ok(event) = rx.recv() {
-            extractor.process_event(event);
-            
+            // C-3: IMEがONの間はバッファへの追加をスキップ
+            if !engine_for_thread.get_paused() {
+                extractor.process_event(event);
+            }
+
             if event.is_press {
-                let ft = extractor.calculate_flight_time_median();
-                if ft > 0.0 {
-                    // Update HMM
-                    engine_for_thread.update(ft);
-                    
-                    // Optional logging
-                    // println!("FT: {:.2}, State: {:?}", ft, engine_for_thread.get_current_state());
+                // B-5: Features を使ってHMMを更新
+                let features = extractor.calculate_features();
+                if features.f1_flight_time_median > 0.0 {
+                    engine_for_thread.update(&features);
                 }
             }
         }
@@ -64,11 +78,10 @@ pub fn run() {
 
     // Start IME Monitor Thread
     thread::spawn(move || {
-        println!("IME Monitor thread started");
+        tracing::info!("IME Monitor thread started");
         let monitor = input::ime::ImeMonitor::new();
         loop {
             let active = monitor.is_candidate_window_open();
-            // println!("IME Active: {}", active);
             engine_for_monitor.set_paused(active);
             thread::sleep(std::time::Duration::from_millis(500));
         }
@@ -100,14 +113,15 @@ pub fn run() {
             #[cfg(desktop)]
             _overlay.set_ignore_cursor_events(true)?;
 
-            // Initialize Sensors (Phase 4)
+            // C-4: SensorManager を app.manage() で登録し、drop を防止
             let sensor_manager = SensorManager::new(app.handle().clone());
             sensor_manager.start_monitoring();
+            app.manage(sensor_manager);
 
             Ok(())
         })
-        .manage(engine) // Manage the engine state for commands
-        .invoke_handler(tauri::generate_handler![greet, get_cognitive_state])
+        .manage(engine)
+        .invoke_handler(tauri::generate_handler![greet, get_cognitive_state, quit_app])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
