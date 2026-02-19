@@ -1,0 +1,39 @@
+﻿    Checking gse-next v0.1.0 (C:\gse-prototype-v2\GSE-Next\src-tauri)
+error[E0425]: cannot find function, tuple struct or tuple variant `RoInitialize` in crate `windows::core`
+  --> src\sensors.rs:28:40
+   |
+28 |                 let _ = windows::core::RoInitialize(windows::core::RO_INIT_MULTITHREADED);
+   |                                        ^^^^^^^^^^^^ not found in `windows::core`
+System.Management.Automation.RemoteException
+error[E0425]: cannot find value `RO_INIT_MULTITHREADED` in crate `windows::core`
+  --> src\sensors.rs:28:68
+   |
+28 |                 let _ = windows::core::RoInitialize(windows::core::RO_INIT_MULTITHREADED);
+   |                                                                    ^^^^^^^^^^^^^^^^^^^^^ not found in `windows::core`
+System.Management.Automation.RemoteException
+error[E0425]: cannot find function, tuple struct or tuple variant `RoInitialize` in crate `windows::core`
+  --> src\sensors.rs:86:40
+   |
+86 |                 let _ = windows::core::RoInitialize(windows::core::RO_INIT_MULTITHREADED);
+   |                                        ^^^^^^^^^^^^ not found in `windows::core`
+System.Management.Automation.RemoteException
+error[E0425]: cannot find value `RO_INIT_MULTITHREADED` in crate `windows::core`
+  --> src\sensors.rs:86:68
+   |
+86 |                 let _ = windows::core::RoInitialize(windows::core::RO_INIT_MULTITHREADED);
+   |                                                                    ^^^^^^^^^^^^^^^^^^^^^ not found in `windows::core`
+System.Management.Automation.RemoteException
+error[E0308]: mismatched types
+  --> src\sensors.rs:34:20
+   |
+33 |             match accel_result {
+   |                   ------------ this expression has type `std::result::Result<Accelerometer, windows_result::error::Error>`
+34 |                 Ok(Some(accel)) => {
+   |                    ^^^^^^^^^^^ expected `Accelerometer`, found `Option<_>`
+   |
+   = note: expected struct `Accelerometer`
+                found enum `Option<_>`
+System.Management.Automation.RemoteException
+Some errors have detailed explanations: E0308, E0425.
+For more information about an error, try `rustc --explain E0308`.
+error: could not compile `gse-next` (lib) due to 5 previous errors

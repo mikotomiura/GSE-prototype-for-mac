@@ -1,0 +1,182 @@
+:root {
+  font-family: 'Inter', system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  --color-flow: #4ade80;
+  --color-incubation: #facc15;
+  --color-stuck: #f87171;
+  --color-bg: #0f172a;
+  --color-text: #f8fafc;
+
+  color-scheme: dark;
+  color: var(--color-text);
+  background-color: var(--color-bg);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Dashboard Styles */
+.dashboard-container {
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  height: 100vh;
+  box-sizing: border-box;
+}
+
+.state-card {
+  padding: 1rem 2rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  text-align: center;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.dominant-state {
+  display: block;
+  font-size: 2.5rem;
+  font-weight: 700;
+  margin-top: 0.5rem;
+}
+
+.dashboard-container.state-flow .dominant-state {
+  color: var(--color-flow);
+}
+
+.dashboard-container.state-incubation .dominant-state {
+  color: var(--color-incubation);
+}
+
+.dashboard-container.state-stuck .dominant-state {
+  color: var(--color-stuck);
+}
+
+.metrics-container {
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.metric-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.metric-row label {
+  width: 100px;
+  text-align: right;
+  font-weight: 500;
+}
+
+.progress-bar-bg {
+  flex-grow: 1;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.progress-bar-fill.flow {
+  background-color: var(--color-flow);
+}
+
+.progress-bar-fill.incubation {
+  background-color: var(--color-incubation);
+}
+
+.progress-bar-fill.stuck {
+  background-color: var(--color-stuck);
+}
+
+.info-box {
+  margin-top: auto;
+  font-size: 0.9rem;
+  opacity: 0.7;
+  text-align: center;
+}
+
+/* Overlay Styles */
+.overlay-root {
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+  overflow: hidden;
+  /* pointer-events handled by layers */
+}
+
+.nudge-layer {
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 150px 50px var(--color-stuck);
+  transition: opacity 0.5s ease;
+  pointer-events: none;
+  z-index: 10;
+  mix-blend-mode: hard-light;
+}
+
+.wall-layer {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.98);
+  backdrop-filter: blur(20px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  pointer-events: auto;
+  transition: opacity 0.3s ease;
+}
+
+.wall-layer h1 {
+  font-size: 4rem;
+  color: var(--color-stuck);
+  margin-bottom: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.wall-layer p {
+  font-size: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.scramble-animation {
+  font-size: 4rem;
+  animation: bounce 1.5s infinite ease-in-out;
+}
+
+@keyframes bounce {
+
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-30px);
+  }
+}
