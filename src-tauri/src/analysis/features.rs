@@ -118,6 +118,42 @@ impl FeatureExtractor {
         }
     }
 
+    /// サイレンス（無入力）期間中の合成特徴量を生成する。
+    ///
+    /// イベント駆動の calculate_features() は無入力中に呼ばれないため、
+    /// タイマーから呼び出してHMMを継続更新するために使用する。
+    ///
+    /// # 設計方針
+    /// - F1: 直近の既知フライトタイムをそのまま使用 (データなしは None)
+    /// - F4: 0.0 (バーストなし = 低Engagement シグナル)
+    /// - F5: silence_secs / 2.0 (2秒ごとに1ポーズとして換算)
+    /// - F3, F6: 0.0 (サイレンス中は修正・削除なし)
+    ///
+    /// silence_secs が 2 未満の場合は None を返す (短すぎる無音はスキップ)。
+    pub fn make_silence_observation(&self, silence_secs: f64) -> Option<Features> {
+        if silence_secs < 2.0 {
+            return None;
+        }
+
+        let f1 = self.calculate_flight_time_median();
+        if f1 <= 0.0 {
+            // フライトタイムデータなし (セッション開始直後のサイレンス)
+            return None;
+        }
+
+        // サイレンス時間 → F5 (ポーズ回数): 2秒ごとに1カウント、最大20
+        let f5 = (silence_secs / 2.0).floor().min(20.0);
+
+        Some(Features {
+            f1_flight_time_median: f1,
+            f2_flight_time_variance: 0.0,
+            f3_correction_rate: 0.0,
+            f4_burst_length: 0.0,
+            f5_pause_count: f5,
+            f6_pause_after_del_rate: 0.0,
+        })
+    }
+
     /// B-1: 直近30秒のバッファから6特徴量を算出する
     pub fn calculate_features(&self) -> Features {
         if self.buffer.is_empty() {

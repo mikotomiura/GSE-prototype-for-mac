@@ -9,11 +9,12 @@ use crate::analysis::{
 };
 use crate::logger::{LogEntry, SessionLogger};
 use crate::sensors::SensorManager;
-use crossbeam_channel::{self, Sender};
+use crossbeam_channel::{self, RecvTimeoutError, Sender};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 
 // ---------------------------------------------------------------------------
@@ -181,55 +182,109 @@ pub fn run() {
     let log_tx_analysis = log_tx;
 
     // 分析スレッド
+    // イベント駆動 (rx.recv) の代わりに recv_timeout を使い、
+    // 無入力期間中もタイマーでHMMを継続更新する。
+    // これにより長時間ポーズ (Incubation/Stuck) を検出できる。
     thread::spawn(move || {
         tracing::info!("Analysis thread started");
         let mut extractor = FeatureExtractor::new(600);
+        let mut last_event_time = Instant::now();
 
-        while let Ok(event) = rx.recv() {
-            if engine_for_thread.get_paused() {
-                continue;
-            }
+        loop {
+            match rx.recv_timeout(Duration::from_millis(1000)) {
+                Ok(event) => {
+                    if engine_for_thread.get_paused() {
+                        continue;
+                    }
 
-            extractor.process_event(event);
+                    last_event_time = Instant::now();
+                    extractor.process_event(event);
 
-            // キーイベントをログ記録
-            let _ = log_tx_analysis.try_send(LogEntry::Key {
-                vk_code: event.vk_code,
-                timestamp: event.timestamp,
-                is_press: event.is_press,
-            });
+                    // キーイベントをログ記録
+                    let _ = log_tx_analysis.try_send(LogEntry::Key {
+                        vk_code: event.vk_code,
+                        timestamp: event.timestamp,
+                        is_press: event.is_press,
+                    });
 
-            if event.is_press {
-                let features = extractor.calculate_features();
-                engine_for_thread.update(&features, Some(event.vk_code));
+                    if event.is_press {
+                        let features = extractor.calculate_features();
+                        engine_for_thread.update(&features, Some(event.vk_code));
 
-                // 特徴量 + 状態確率をログ記録
-                let state_probs = engine_for_thread.get_current_state();
-                let p_flow = state_probs
-                    .get(&CognitiveState::Flow)
-                    .copied()
-                    .unwrap_or(0.0);
-                let p_inc = state_probs
-                    .get(&CognitiveState::Incubation)
-                    .copied()
-                    .unwrap_or(0.0);
-                let p_stuck = state_probs
-                    .get(&CognitiveState::Stuck)
-                    .copied()
-                    .unwrap_or(0.0);
+                        // 特徴量 + 状態確率をログ記録
+                        let state_probs = engine_for_thread.get_current_state();
+                        let p_flow = state_probs
+                            .get(&CognitiveState::Flow)
+                            .copied()
+                            .unwrap_or(0.0);
+                        let p_inc = state_probs
+                            .get(&CognitiveState::Incubation)
+                            .copied()
+                            .unwrap_or(0.0);
+                        let p_stuck = state_probs
+                            .get(&CognitiveState::Stuck)
+                            .copied()
+                            .unwrap_or(0.0);
 
-                let _ = log_tx_analysis.try_send(LogEntry::Feat {
-                    timestamp: event.timestamp,
-                    f1: features.f1_flight_time_median,
-                    f2: features.f2_flight_time_variance,
-                    f3: features.f3_correction_rate,
-                    f4: features.f4_burst_length,
-                    f5: features.f5_pause_count,
-                    f6: features.f6_pause_after_del_rate,
-                    p_flow,
-                    p_inc,
-                    p_stuck,
-                });
+                        let _ = log_tx_analysis.try_send(LogEntry::Feat {
+                            timestamp: event.timestamp,
+                            f1: features.f1_flight_time_median,
+                            f2: features.f2_flight_time_variance,
+                            f3: features.f3_correction_rate,
+                            f4: features.f4_burst_length,
+                            f5: features.f5_pause_count,
+                            f6: features.f6_pause_after_del_rate,
+                            p_flow,
+                            p_inc,
+                            p_stuck,
+                        });
+                    }
+                }
+
+                Err(RecvTimeoutError::Timeout) => {
+                    // 無入力期間の検出: サイレンス特徴量でHMMを更新する
+                    if engine_for_thread.get_paused() {
+                        continue;
+                    }
+                    let silence_secs = last_event_time.elapsed().as_secs_f64();
+                    if let Some(sf) = extractor.make_silence_observation(silence_secs) {
+                        engine_for_thread.update(&sf, None);
+
+                        let state_probs = engine_for_thread.get_current_state();
+                        let p_flow = state_probs
+                            .get(&CognitiveState::Flow)
+                            .copied()
+                            .unwrap_or(0.0);
+                        let p_inc = state_probs
+                            .get(&CognitiveState::Incubation)
+                            .copied()
+                            .unwrap_or(0.0);
+                        let p_stuck = state_probs
+                            .get(&CognitiveState::Stuck)
+                            .copied()
+                            .unwrap_or(0.0);
+
+                        let now_ts = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+
+                        let _ = log_tx_analysis.try_send(LogEntry::Feat {
+                            timestamp: now_ts,
+                            f1: sf.f1_flight_time_median,
+                            f2: sf.f2_flight_time_variance,
+                            f3: sf.f3_correction_rate,
+                            f4: sf.f4_burst_length,
+                            f5: sf.f5_pause_count,
+                            f6: sf.f6_pause_after_del_rate,
+                            p_flow,
+                            p_inc,
+                            p_stuck,
+                        });
+                    }
+                }
+
+                Err(RecvTimeoutError::Disconnected) => break,
             }
         }
     });

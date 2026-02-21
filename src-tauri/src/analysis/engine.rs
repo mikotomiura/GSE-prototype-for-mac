@@ -34,17 +34,17 @@ pub struct CognitiveStateEngine {
 
 impl CognitiveStateEngine {
     pub fn new() -> Self {
-        // Literature-backed transition probabilities (as a Smoothing Filter for Phase 1)
-        // FLOW -> FLOW: 0.92  (Csikszentmihalyi 1990; 1/(1-0.92)=12.5s)
-        // FLOW -> INCUBATION: 0.07
-        // FLOW -> STUCK: 0.01
-        // INCUBATION -> INCUBATION: 0.82  (Sio & Ormerod 2009; 1/(1-0.82)=5.6s)
-        // INCUBATION -> FLOW: 0.10
+        // Transition probabilities
+        // FLOW -> FLOW: 0.80  (escape time 1/(1-0.80)=5s; reduced from 0.92 to prevent saturation)
+        // FLOW -> INCUBATION: 0.13
+        // FLOW -> STUCK: 0.07
+        // INCUBATION -> FLOW: 0.12
+        // INCUBATION -> INCUBATION: 0.80  (Sio & Ormerod 2009)
         // INCUBATION -> STUCK: 0.08
-        // STUCK -> STUCK: 0.80  (Hall et al. 2024; 1/(1-0.80)=5.0s)
-        // STUCK -> INCUBATION: 0.15
-        // STUCK -> FLOW: 0.05
-        let transitions = [0.92, 0.07, 0.01, 0.10, 0.82, 0.08, 0.05, 0.15, 0.80];
+        // STUCK -> FLOW: 0.06
+        // STUCK -> INCUBATION: 0.18
+        // STUCK -> STUCK: 0.76  (Hall et al. 2024)
+        let transitions = [0.80, 0.13, 0.07, 0.12, 0.80, 0.08, 0.06, 0.18, 0.76];
 
         // Emissions B: 3 states × 26 bins
         //
@@ -110,8 +110,8 @@ impl CognitiveStateEngine {
                                0.99,
         ];
 
-        // 初期事前確率: Flow優位で開始
-        let initial_probs = [0.7, 0.2, 0.1];
+        // 初期事前確率: バランス型で開始 (Flow偏重を排除)
+        let initial_probs = [0.5, 0.3, 0.2];
 
         Self {
             transitions: Arc::new(transitions),
@@ -119,8 +119,9 @@ impl CognitiveStateEngine {
             current_state_probs: Arc::new(Mutex::new(initial_probs)),
             is_paused: Arc::new(Mutex::new(false)),
             backspace_streak: Arc::new(Mutex::new(0)),
-            // (0.0, 1.0) = 低Friction・高Engagement = Flow領域で初期化
-            axes_ewma: Arc::new(Mutex::new((0.0, 1.0))),
+            // (0.3, 0.5) = 中立領域で初期化 (obs=7; Flow/Inc/Stuck がほぼ均等な観測ビン)
+            // (0.0, 1.0) で開始すると初回更新で p_flow=1.0 に固定されるため変更
+            axes_ewma: Arc::new(Mutex::new((0.3, 0.5))),
         }
     }
 
@@ -280,6 +281,10 @@ impl CognitiveStateEngine {
         let n_states = 3;
 
         // Forward Algorithm Step
+        // ε-floor: 放射確率の最小値を保証し、単一観測で状態確率が完全に0になることを防ぐ
+        // これにより p_flow=1.0 への飽和 (確率の吸収状態) を抑制する
+        const EMISSION_FLOOR: f64 = 0.01;
+
         let mut sum_prob = 0.0;
 
         for j in 0..n_states {
@@ -290,7 +295,7 @@ impl CognitiveStateEngine {
             }
 
             // 3 states × 26 bins: index = j * 26 + obs
-            let e_prob = self.emissions[j * 26 + obs];
+            let e_prob = self.emissions[j * 26 + obs] + EMISSION_FLOOR;
             new_probs[j] = trans_sum * e_prob;
             sum_prob += new_probs[j];
         }
