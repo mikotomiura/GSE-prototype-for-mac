@@ -3,7 +3,11 @@
     "allow": [
       "Bash(ls:*)",
       "Bash(python3:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(cargo build:*)",
+      "Bash(RUST_MIN_STACK=67108864 cargo check:*)",
+      "Bash(grep:*)",
+      "Bash(tasklist:*)"
     ]
   }
 }
