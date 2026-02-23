@@ -38,8 +38,8 @@ The three states are grounded in established cognitive science literature:
 | State | Definition | Behavioral Signature |
 |---|---|---|
 | **Flow** | Effortless, intrinsically motivated task engagement (Csikszentmihalyi, 1990) | Short inter-key intervals, low correction rate, long continuous bursts |
-| **Incubation** | Deliberate pause enabling sub-conscious problem restructuring (Sio & Ormerod, 2009) | Extended silence (≥2 s) followed by rapid output burst |
-| **Stuck** | Perseverative failure to escape an impasse (Ohlsson, 1992) | Short bursts → delete → pause loops with zero net character gain |
+| **Incubation** | Deliberate pause enabling sub-conscious problem restructuring (Sio & Ormerod, 2009) | **High $P(\text{Burst} \mid \text{Pause})$**: Extended silence (≥2 s) followed by rapid output burst |
+| **Stuck** | Perseverative failure to escape an impasse (Ohlsson, 1992) | **High $P(\text{Pause} \mid \text{Delete})$**: Perseverative delete-pause loops with near-zero character gain |
 
 ---
 
@@ -174,14 +174,18 @@ This form is analogous to a one-sided z-score with an implicit σ = κ·β.
 
 ## HMM Engine
 
-### Latent Axes: Friction × Engagement
+### Semantic Latent Axes: Cognitive Friction × Productive Silence
 
-The six normalized features are projected onto two interpretable latent axes before discretization:
+The six normalized features are projected onto two interpretable semantic latent axes before discretization:
 
+```text
+X (Cognitive Friction)   = 0.30·φ(F3) + 0.25·φ(F6) + 0.25·φ(F1) + 0.20·φ(F5)
+Y (Productive Silence)   = 0.40·φ(F4) + 0.35·(1 − φ(F1)) + 0.25·(1 − φ(F5))
 ```
-X (Friction)   = 0.30·φ(F3) + 0.25·φ(F6) + 0.25·φ(F1) + 0.20·φ(F5)
-Y (Engagement) = 0.40·φ(F4) + 0.35·(1 − φ(F1)) + 0.25·(1 − φ(F5))
-```
+
+**Cognitive Friction ($X$)**: Quantifies the depth of "hesitation" or struggle, heavily weighting the Stuck index $P(\text{Pause} \mid \text{Delete})$ (represented by F6).
+
+**Productive Silence ($Y$)**: Indicates how much a silence leads to a productive burst. This separates valuable DMN-activated incubation from mere cognitive stalling.
 
 Both axes are smoothed with an Exponential Weighted Moving Average (α = 0.30) to suppress single-keystroke noise:
 ```
@@ -193,8 +197,8 @@ ewma_t = 0.30 · raw_t + 0.70 · ewma_{t−1}
 (X, Y) ∈ [0,1]² is discretized into a 5×5 grid (25 bins) plus one penalty bin (obs = 25, triggered by ≥ 5 consecutive Backspace presses):
 
 ```
-Friction X →  0(low)   1      2      3      4(high)
-Engagement Y ↓
+Cognitive Friction X →  0(low)   1      2      3      4(high)
+Productive Silence Y ↓
 4 (high)     [Flow]  [Flow]  [   ]  [   ]  [    ]
 3            [Flow]  [Flow]  [   ]  [   ]  [    ]
 2            [    ]  [    ]  [ ? ]  [Stk]  [Stk ]
@@ -236,6 +240,9 @@ Three pathological behaviors were identified from session log analysis and corre
 ---
 
 ### Fix ①: Cold-Start Hysteresis (Stuck → Flow window-reset spike)
+
+**Theoretical Note: O(1) Alternative to HSMM**
+Standard HMMs cannot model state duration distributions explicitly (they assume geometric decay). While a Hidden Semi-Markov Model (HSMM) is theoretically optimal for modeling the distinct, non-geometric durations of Incubation and Stuck, it introduces $O(T^2)$ computational complexity and requires massive data to estimate duration parameters (overfitting in $n=1$ environments). The EMA hysteresis layer introduced below acts as an $O(1)$ computational hack to enforce minimum state dwell times without the overhead of an HSMM, making it ideal for edge inference.
 
 **Problem:** At t = 255.2 s a 30-second window advanced past heavy backspacing activity. The deleted events exited the window; fresh-window features looked like Flow. Result: `p_stuck = 0.994 → p_flow = 0.48` in one HMM step (< 1 ms).
 
