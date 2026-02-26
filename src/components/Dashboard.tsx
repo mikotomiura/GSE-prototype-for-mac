@@ -6,9 +6,10 @@ interface DashboardProps {
     incubation: number;
     stuck: number;
   };
+  onQuit: () => void;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ cognitiveState }) => {
+const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit }) => {
   // Determine dominant state for color coding
   const getMaxState = () => {
     const { flow, incubation, stuck } = cognitiveState;
@@ -66,6 +67,10 @@ const Dashboard: React.FC<DashboardProps> = ({ cognitiveState }) => {
         <p>Type naturally. The engine analyzes your keystroke dynamics.</p>
         <p><strong>Incubation</strong> suggests pausing. <strong>Stuck</strong> suggests moving.</p>
       </div>
+
+      <button className="quit-button" onClick={onQuit}>
+        セッション終了
+      </button>
     </div>
   );
 };

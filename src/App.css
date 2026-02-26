@@ -118,6 +118,25 @@ body {
   text-align: center;
 }
 
+.quit-button {
+  margin-top: 1rem;
+  width: 100%;
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  color: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.quit-button:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.2);
+}
+
 /* Overlay Styles */
 .overlay-root {
   width: 100vw;

@@ -80,9 +80,13 @@ function App() {
     );
   }
 
+  const handleQuit = () => {
+    invoke("quit_app").catch(console.error);
+  };
+
   // Default to Main Dashboard
   return (
-    <Dashboard cognitiveState={cognitiveState} />
+    <Dashboard cognitiveState={cognitiveState} onQuit={handleQuit} />
   );
 }
 
