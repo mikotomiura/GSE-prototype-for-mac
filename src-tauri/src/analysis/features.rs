@@ -263,10 +263,21 @@ impl FeatureExtractor {
         if silence_secs < 2.0 {
             return None;
         }
-        // タイピングリズム系特徴量は0、F5（ポーズ回数）だけ沈黙の長さを反映。
+
+        // F1 に既存のフライトタイム中央値を使う。
+        // engine.update() は f1 <= 0.0 の場合に早期リターンするため、
+        // 0.0 を渡すと沈黙観測が全て捨てられ HMM が更新されなくなる。
+        // フライトタイム履歴がない場合は中立値 150.0ms（coding baseline）を使う。
+        let f1 = {
+            let m = self.calculate_flight_time_median();
+            if m > 0.0 { m } else { 150.0 }
+        };
+
+        // タイピングリズム系（F3/F4/F6）は0、F5（ポーズ回数）だけ沈黙の長さを反映。
         // F5定義: 「2秒以上の無入力回数」→ silence_secs / 2.0 で近似。
+        // → X軸(Friction) は低め、Y軸(Engagement) は低め → Incubation 領域へ引き寄せる。
         Some(Features {
-            f1_flight_time_median: 0.0,
+            f1_flight_time_median: f1,
             f2_flight_time_variance: 0.0,
             f3_correction_rate: 0.0,
             f4_burst_length: 0.0,
