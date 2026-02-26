@@ -264,18 +264,22 @@ impl FeatureExtractor {
             return None;
         }
 
-        // F1 に既存のフライトタイム中央値を使う。
-        // engine.update() は f1 <= 0.0 の場合に早期リターンするため、
-        // 0.0 を渡すと沈黙観測が全て捨てられ HMM が更新されなくなる。
-        // フライトタイム履歴がない場合は中立値 150.0ms（coding baseline）を使う。
-        let f1 = {
-            let m = self.calculate_flight_time_median();
-            if m > 0.0 { m } else { 150.0 }
-        };
+        // F1 に大きな値（2000ms）を使う。
+        //
+        // 理由: engine.update() は f1 <= 0.0 で早期リターンするため 0 は不可。
+        //   calculate_flight_time_median() の実測値（例: 112ms）を使うと
+        //   phi1 = phi(112, 150) = 0.0 となり Y_silence = 0.35*1.0 + 0.25*1.0 = 0.60。
+        //   Y=0.60 は y_bin=3 (Flow優位ビン) に落ち、EWMA平衡点が 0.60 に固定されて
+        //   沈黙中も Flow が維持され続ける（Incubation に遷移しない）。
+        //
+        //   f1=2000ms とすると phi1 = 1.0 → (1-phi1) = 0 → Y = 0.25*(1-phi5)。
+        //   phi5 が増えるほど Y→0 となり、4-5秒の沈黙で y_bin が Incubation 領域に入る。
+        //   「現在タイピングしていない = Flight Time が事実上無限大」と解釈する。
+        let f1 = 2000.0_f64;
 
         // タイピングリズム系（F3/F4/F6）は0、F5（ポーズ回数）だけ沈黙の長さを反映。
         // F5定義: 「2秒以上の無入力回数」→ silence_secs / 2.0 で近似。
-        // → X軸(Friction) は低め、Y軸(Engagement) は低め → Incubation 領域へ引き寄せる。
+        // → Y = 0.25*(1-phi5): 沈黙が伸びるほど低下 → Incubation 領域へ引き寄せる。
         Some(Features {
             f1_flight_time_median: f1,
             f2_flight_time_variance: 0.0,
