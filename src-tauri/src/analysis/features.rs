@@ -254,4 +254,24 @@ impl FeatureExtractor {
             f6_pause_after_del_rate: f6,
         }
     }
+
+    /// サイレンス期間（無入力）の合成観測値を生成する。
+    /// silence_secs < 2.0 の場合は None を返す（ポーズとして認識しない）。
+    /// HMM の無入力期間更新 (lib.rs の recv_timeout パス) で使用される。
+    pub fn make_silence_observation(&self, silence_secs: f64) -> Option<Features> {
+        // 2秒未満の無入力はポーズとして扱わない
+        if silence_secs < 2.0 {
+            return None;
+        }
+        // タイピングリズム系特徴量は0、F5（ポーズ回数）だけ沈黙の長さを反映。
+        // F5定義: 「2秒以上の無入力回数」→ silence_secs / 2.0 で近似。
+        Some(Features {
+            f1_flight_time_median: 0.0,
+            f2_flight_time_variance: 0.0,
+            f3_correction_rate: 0.0,
+            f4_burst_length: 0.0,
+            f5_pause_count: silence_secs / 2.0,
+            f6_pause_after_del_rate: 0.0,
+        })
+    }
 }
