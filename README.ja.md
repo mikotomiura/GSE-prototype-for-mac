@@ -17,10 +17,11 @@
 5. [特徴量抽出（F1–F6）](#特徴量抽出f1f6)
 6. [HMM エンジン](#hmm-エンジン)
 7. [ヒステリシスと安定性修正（v2.1）](#ヒステリシスと安定性修正v21)
-8. [IME 検出](#ime-検出)
-9. [ログと分析](#ログと分析)
-10. [ビルド手順](#ビルド手順)
-11. [学術的参考文献](#学術的参考文献)
+8. [IME 検出とコンテキスト対応ベースライン（v2.2）](#ime-検出とコンテキスト対応ベースラインv22)
+9. [IME モード検出：堅牢な多層アーキテクチャ（v2.3）](#ime-モード検出堅牢な多層アーキテクチャv23)
+10. [ログと分析](#ログと分析)
+11. [ビルド手順](#ビルド手順)
+12. [学術的参考文献](#学術的参考文献)
 
 ---
 
@@ -93,13 +94,15 @@
 ```
 メインスレッド（Tauri イベントループ）
     │
-    ├─ フックスレッド       ← WH_KEYBOARD_LL メッセージループ + WinEvent IME コールバック
+    ├─ フックスレッド           ← WH_KEYBOARD_LL メッセージループ + WinEvent IME コールバック
     │       │ crossbeam::channel (bounded 64, ノンブロッキング送信)
-    ├─ 分析スレッド         ← recv_timeout(1 s) でキーイベントと沈黙の両方で HMM 更新
+    │       │ bounded(1) ウェイクチャンネル → IME ポーリングスレッド
+    ├─ 分析スレッド             ← recv_timeout(1 s) でキーイベントと沈黙の両方で HMM 更新
     │       │ Arc<Mutex<CognitiveStateEngine>> (Tauri managed state)
-    ├─ IME モニタースレッド ← 100ms ごとに is_candidate_window_open() をポーリング
+    ├─ IME モニタースレッド     ← 100ms ごとに is_candidate_window_open() をポーリング（作文停止）
+    ├─ IME ポーリングスレッド   ← recv_timeout(100ms) ウェイク; ImmGetOpenStatus + VK_DBE_* フォールバック
     │
-    └─ ロガースレッド       ← bounded channel(512) → NDJSON ファイル (BufWriter)
+    └─ ロガースレッド           ← bounded channel(512) → NDJSON ファイル (BufWriter)
 ```
 
 ---
@@ -321,21 +324,147 @@ EWMA 平滑化（α = 0.30）後、Stuck 観測はさらに約 5 秒かけて反
 
 ---
 
-## IME 検出
+## IME 検出とコンテキスト対応ベースライン（v2.2）
 
-日本語（その他の CJK）入力では組み立て段階（ローマ字→かな変換）で生のキーイベントが最終文字に対応しません。これらのイベントを解析すると特徴量ベクトルが破損します。三つの相補的検出層を使用します。
+日本語 IME 入力は特徴量分析に二つの課題をもたらします。
+
+1. **候補選択フェーズ**（スペース → 漢字候補リスト表示中）：ナビゲーションキー（矢印・Enter）が特徴量ベクトルを汚染する
+2. **入力モードコンテキスト**（あモード vs Aモード）：日本語執筆とASCIIコーディングではフライトタイムの基準値が大きく異なる
+
+### 候補ウィンドウ検出によるポーズ
+
+漢字候補リストが表示されている間は分析を一時停止し、表示状態を Flow に保ちます。二つの検出層を使用します。
 
 | 層 | 手法 | 備考 |
 | --- | --- | --- |
-| **主** | `SetWinEventHook`（EVENT\_OBJECT\_IME\_CHANGE/SHOW/HIDE） | クロスプロセス。DLL インジェクション不要。候補リスト表示前のローマ字→かな変換段階から検出可能 |
-| **副** | `EnumWindows` による "CandidateUI" / "IME" ウィンドウクラス検索 | 候補選択段階をカバー |
-| **三次** | UIAutomation `GetFocusedElement` | IME ウィンドウにフォーカスがある場合のみ有効 |
+| **主** | `EnumWindows` による "CandidateUI" / "IME" ウィンドウクラス検索 | 直接クロスプロセス ウィンドウスキャン。フック不要 |
+| **副** | UIAutomation `GetFocusedElement` | フォーカスが IME 候補パネルにある場合のフォールバック |
 
-**ステールフラグ回復：** WinEvent フラグが立っているが副・三次の両方が候補ウィンドウを確認できない場合、フラグをリセットして永続的な分析停止を防ぎます。
+グローバル TSF フック（`ITfThreadMgr`）は使用しません — プロセス境界を越えると UIPI によってブロックされます。
 
 **MSCTFIME UI は明示的に除外：** このクラスは TSF 言語バー（タスクバーの A/あ インジケーター）に属し、日本語 IME が読み込まれている場合は常時表示されます。含めると恒久的な誤検知が発生します。
 
-グローバル TSF フック（`ITfThreadMgr`）は使用しません — プロセス境界を越えると UIPI によってブロックされます。
+### VK\_DBE\_\* キーによる IME モード検出（v2.2）
+
+**`VK_PROCESSKEY` が機能しない理由：** `WH_KEYBOARD_LL` は IME エンジンが入力を処理する前に発火します。変換中に押されたキーは `VK_PROCESSKEY`（0xE5）ではなく生のキーコード（`VK_A`、`VK_I` など）としてフックに届きます。これは設計上の動作で、ローレベルフックは IME レイヤーより下にあります。
+
+**機能するもの：** Windows は IME モード切替キー — `VK_DBE_ALPHANUMERIC`（0xF0）、`VK_DBE_HIRAGANA`（0xF2）、`VK_DBE_KATAKANA`（0xF1）など — を IME 処理前に `WH_KEYBOARD_LL` に届けます。これらはハードウェアレベルの入力モード切替キーだからです。**実証確認：** セッションログ `gse_20260222_074741.ndjson` の分析で `VK_DBE_ALPHANUMERIC`（vk = 240）が14回観測され、モード切替キーが確実にフックに届くことが実証されました。
+
+フックスレッドは `IME_OPEN: AtomicBool` を管理します。
+
+| VK コード | 値 | `IME_OPEN` への効果 |
+| --- | --- | --- |
+| `VK_DBE_ALPHANUMERIC`（0xF0） | 英数直接入力（A）に切替 | → `false` |
+| `VK_DBE_SBCSCHAR`（0xF3） | 半角文字モード | → `false` |
+| `VK_DBE_HIRAGANA`（0xF2） | ひらがなモード（あ） | → `true` |
+| `VK_DBE_KATAKANA`（0xF1） | カタカナモード（カ） | → `true` |
+| `VK_DBE_DBCSCHAR`（0xF4） | 全角文字モード | → `true` |
+| `VK_KANJI`（0x19） | 半角/全角トグル | → 反転 |
+
+**制限：** 初期状態は `false`（英数）と仮定します。セッション中に最初のモード切替キーが押された後から正確になります。
+
+### コンテキスト別 β（デュアルベースライン）
+
+`φ(x, β)` 正規化関数は現在の IME モードに応じて異なる参照値を使用し、系統的バイアスを補正します。
+
+| コンテキスト | `IME_OPEN` | β\_F1（ms） | β\_F3 | β\_F4 | β\_F5 | β\_F6 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **β\_coding**（Aモード） | `false` | 150 | 0.06 | 5.0 | 2.0 | 0.08 |
+| **β\_writing**（あ/カモード） | `true` | 220 | 0.08 | 2.0 | 4.0 | 0.12 |
+
+**重要性：** 150ms のフライトタイムで打つコーダーは β\_coding 基準では Flow に見えますが、β\_writing 基準で評価すると誤って Stuck に分類されます（逆も同様）。コンテキスト切替によりこの系統的誤分類が解消されます。
+
+IME モードの変化は新しいレコードタイプとしてログ記録されます。
+
+```jsonc
+// IME モード切替: ユーザーが VK_DBE_HIRAGANA を押した（→ 日本語執筆モード）
+{"type":"ime_state","t":1740000001234,"on":true}
+
+// IME モード切替: ユーザーが VK_DBE_ALPHANUMERIC を押した（→ 英数/コーディングモード）
+{"type":"ime_state","t":1740000005678,"on":false}
+```
+
+---
+
+## IME モード検出：堅牢な多層アーキテクチャ（v2.3）
+
+v2.2 では `VK_DBE_*` キー追跡による IME モード検出を実装しました。Surface Pro 8 Type Cover での実機テストにより、さらに三つの障害モードが発見され、検出パイプラインの全面的な再設計が必要となりました。
+
+### 発見・修正されたバグ
+
+**バグ 1 — 同一ミリ秒フラッピング**（ログ `gse_20260225_142614.ndjson`）:
+分析スレッドが `ImeState` ログエントリをトリガーキーストロークと全く同じミリ秒に emit しており、同一タイムスタンプで `on:true` + `on:false` のペアが生じていました。根本原因：分析スレッドがキーストロークイベントのタイムスタンプと同期して IME 状態を計算していた。
+
+**バグ 2 — `ImmGetContext` によるゼロ検出**（ログ `gse_20260225_153634.ndjson`）:
+ポーリングのみのアプローチで `ImmGetContext(foreground_hwnd)` を呼び出すと、Windows 10/11 上のクロスプロセスウィンドウでは常に NULL が返りました。結果として `ime_state` エントリがゼロになりました。
+
+**バグ 3 — Surface Type Cover キーボードの非対称性**（ログ `gse_20260225_162114.ndjson`）:
+このキーボードでは `VK_DBE_HIRAGANA`（0xF2）は**key-UP のみ**発火し、`VK_DBE_ALPHANUMERIC`（0xF0）は**key-DOWN のみ**発火します（常に同一ミリ秒にペアで到達）。v2.2 の `is_press` のみのハンドラーではひらがなキーを完全に見逃していました。
+
+**バグ 4 — 初回状態が emit されない**:
+`last_state: bool = false`、`IME_OPEN` 初期値 `false` の状態で `VK_DBE_ALPHANUMERIC` を押すと `IME_OPEN = false`（変化なし）が設定され、`false != false` が `false` に評価されるため emit が発生しませんでした。
+
+### v2.3 アーキテクチャ：三層検出システム
+
+```
+Layer 1（主）: ImmGetOpenStatus ポーリング
+  └─ ImmGetContext が非 NULL を返す場合のみ有効（自プロセスのウィンドウのみ、稀）
+
+Layer 2（フォールバック）: IME_STATE_DIRTY フラグ経由 VK_DBE_* アトミック追跡
+  ├─ hook_callback が key-DOWN・key-UP 両方で IME_OPEN + IME_STATE_DIRTY を設定
+  └─ Surface Type Cover の非対称性に対応（VK_DBE_HIRAGANA は key-UP のみ）
+
+Layer 3（推論）: WinEvent EVENT_OBJECT_IME_CHANGE/SHOW
+  └─ 作文は日本語モードのときのみ開始可能 → クロスプロセスで IME_OPEN=true を推論
+```
+
+### アンチフラッピング保証
+
+`LogEntry::ImeState` はキーボードフック・分析スレッドからは一切 emit されず、**IME ポーリングスレッドからのみ** emit されます。処理フローは以下の通りです。
+
+```
+hook_callback（key-DOWN または key-UP）
+    │  atomic store: IME_OPEN = new_state
+    │  atomic store: IME_STATE_DIRTY = true
+    └─ bounded(1) ウェイクチャンネルに try_send(()) （ノンブロッキング、満杯なら破棄）
+
+IME ポーリングスレッド
+    │  recv_timeout(100ms)   ← キープレス信号から 1ms 以内に起床
+    │  sleep(5ms)            ← IME エンジンの状態反映を待機
+    │  IME_STATE_DIRTY 読み取り ← 状態変化を確認
+    │  LogEntry::ImeState { timestamp: SystemTime::now(), on } を emit
+    └─ タイムスタンプはトリガーキーストロークの ≥5ms 後を保証
+```
+
+### キーアトミック（`hook.rs`）
+
+| アトミック | 書き込み元 | 読み取り元 | 用途 |
+|---|---|---|---|
+| `IME_OPEN` | フック（VK_DBE_* ↑↓, WinEvent）、ポーリングスレッド | 分析スレッド | 現在の IME モード |
+| `IME_STATE_DIRTY` | フック（VK_DBE_* ↑↓, WinEvent 作文開始） | ポーリングスレッド（`.swap(false)`） | ログ emit のトリガー |
+| `IME_ACTIVE` | WinEvent フック（作文開始/終了） | ImeMonitor（100ms ポーリング） | 候補ウィンドウ停止 |
+
+### `Option<bool>` 初期状態
+
+ポーリングスレッドは `last_state: Option<bool> = None`（`bool = false` ではない）で追跡します。比較ロジック：
+
+```rust
+if last_state.map_or(true, |prev| prev != current) { emit(); last_state = Some(current); }
+```
+
+これにより、初期状態が `false` であっても `true` であっても、**初回検出は必ず emit** されます。
+
+### 実機での動作確認
+
+ログ `gse_20260225_172338.ndjson` で修正が確認されました。
+
+| 確認項目 | 結果 |
+|---|---|
+| 検出された `ime_state` エントリ数 | **9件**（v2.2: 0件） |
+| 同一タイムスタンプフラッピング | **なし** |
+| キー → ime\_state 最小ラグ | **5ms**（VK\_DBE\_* パス） |
+| WinEvent 作文推論ラグ | **約 23〜38ms** |
+| on/false 交互遷移パターン | **正常** |
 
 ---
 
@@ -448,4 +577,4 @@ python analysis/behavioral_gt.py "%USERPROFILE%\Documents\GSE-sessions\gse_YYYYM
 
 ---
 
-*最終更新：2026-02-22*
+*最終更新：2026-02-27*

@@ -16,10 +16,11 @@
 5. [Feature Extraction (F1–F6)](#feature-extraction-f1f6)
 6. [HMM Engine](#hmm-engine)
 7. [Hysteresis & Stability Fixes (v2.1)](#hysteresis--stability-fixes-v21)
-8. [IME Detection](#ime-detection)
-9. [Logging & Analysis](#logging--analysis)
-10. [Build Instructions](#build-instructions)
-11. [Academic References](#academic-references)
+8. [IME Detection and Context-Aware Baseline (v2.2)](#ime-detection-and-context-aware-baseline-v22)
+9. [IME Mode Detection: Robust Multi-Layer Architecture (v2.3)](#ime-mode-detection-robust-multi-layer-architecture-v23)
+10. [Logging & Analysis](#logging--analysis)
+11. [Build Instructions](#build-instructions)
+12. [Academic References](#academic-references)
 
 ---
 
@@ -92,13 +93,15 @@ The three states are grounded in established cognitive science literature:
 ```
 Main Thread (Tauri event loop)
     │
-    ├─ Hook Thread          ← WH_KEYBOARD_LL message loop + WinEvent IME callbacks
+    ├─ Hook Thread            ← WH_KEYBOARD_LL message loop + WinEvent IME callbacks
     │       │ crossbeam::channel (bounded 64, non-blocking send)
-    ├─ Analysis Thread      ← recv_timeout(1 s) drives HMM on keystrokes AND silence
+    │       │ bounded(1) wake channel → IME Polling Thread
+    ├─ Analysis Thread        ← recv_timeout(1 s) drives HMM on keystrokes AND silence
     │       │ Arc<Mutex<CognitiveStateEngine>> (Tauri managed state)
-    ├─ IME Monitor Thread   ← polls is_candidate_window_open() every 100 ms
+    ├─ IME Monitor Thread     ← polls is_candidate_window_open() every 100 ms (composition pause)
+    ├─ IME Polling Thread     ← recv_timeout(100 ms) wake; ImmGetOpenStatus + VK_DBE_* fallback
     │
-    └─ Logger Thread        ← bounded channel(512) → NDJSON file (BufWriter)
+    └─ Logger Thread          ← bounded channel(512) → NDJSON file (BufWriter)
 ```
 
 ---
@@ -321,21 +324,147 @@ After EWMA smoothing (α = 0.30), the Stuck observation registers over approxima
 
 ---
 
-## IME Detection
+## IME Detection and Context-Aware Baseline (v2.2)
 
-Japanese (and other CJK) input involves a composition phase (romaji → kana conversion) where raw key events do not correspond to final characters. Analysing these events would corrupt feature vectors. Three complementary detection layers are used:
+Japanese IME input introduces two distinct challenges for keystroke analysis:
+
+1. **Candidate selection phase** (space → kanji list visible): navigation keystrokes (arrow, Enter) should not pollute feature vectors
+2. **Input mode context** (あ mode vs A mode): flight-time norms differ significantly between Japanese writing and ASCII coding
+
+### Candidate Window Suppression
+
+When the kanji candidate list is visible, analysis is paused and the display state is held at Flow. Two detection layers are used:
 
 | Layer | Method | Notes |
 |---|---|---|
-| **Primary** | `SetWinEventHook` (EVENT\_OBJECT\_IME\_CHANGE / SHOW / HIDE) | Cross-process. No DLL injection. Fires during romaji→kana phase before candidate list appears |
-| **Secondary** | `EnumWindows` scan for "CandidateUI" / "IME" window classes | Covers candidate selection phase as belt-and-suspenders |
-| **Tertiary** | UIAutomation `GetFocusedElement` | Last resort; limited to when IME window is focused |
+| **Primary** | `EnumWindows` scan for "CandidateUI" / "IME" window classes | Direct cross-process window scan, no hooks required |
+| **Secondary** | UIAutomation `GetFocusedElement` | Fallback when focused element is the IME candidate panel |
 
-**Stale-flag recovery:** If the WinEvent flag is set but neither secondary nor tertiary method confirms an active candidate window, the flag is cleared. This prevents permanently pausing analysis after a missed `EVENT_OBJECT_IME_HIDE`.
+Global TSF hooks (`ITfThreadMgr`) are not used — they are blocked by UIPI across process boundaries.
 
 **MSCTFIME UI is explicitly excluded:** This class belongs to the TSF language bar (the A/あ indicator on the taskbar), which is always visible when Japanese IME is loaded. Including it would cause a permanent false positive.
 
-Global TSF hooks (`ITfThreadMgr`) are not used — they are blocked by UIPI across process boundaries.
+### IME Mode Detection via VK\_DBE\_\* Keys (v2.2)
+
+**Why `VK_PROCESSKEY` does not work:** `WH_KEYBOARD_LL` fires before the IME engine processes input. Keys typed during composition therefore arrive as their raw codes (`VK_A`, `VK_I`, etc.), not as `VK_PROCESSKEY` (0xE5). This is by design — the low-level hook is below the IME layer.
+
+**What does work:** Windows delivers IME mode-switch keys — `VK_DBE_ALPHANUMERIC` (0xF0), `VK_DBE_HIRAGANA` (0xF2), `VK_DBE_KATAKANA` (0xF1), etc. — to `WH_KEYBOARD_LL` before IME processing, because these are hardware-level input mode toggles. **Empirical confirmation:** `VK_DBE_ALPHANUMERIC` (vk = 240) was observed 14 times in session log `gse_20260222_074741.ndjson`, proving that mode-switch keys reach the hook reliably.
+
+The hook thread maintains `IME_OPEN: AtomicBool`:
+
+| VK Code | Value | Effect on `IME_OPEN` |
+|---|---|---|
+| `VK_DBE_ALPHANUMERIC` (0xF0) | Switch to alphanumeric (A) | → `false` |
+| `VK_DBE_SBCSCHAR` (0xF3) | Single-byte mode | → `false` |
+| `VK_DBE_HIRAGANA` (0xF2) | Hiragana mode (あ) | → `true` |
+| `VK_DBE_KATAKANA` (0xF1) | Katakana mode (カ) | → `true` |
+| `VK_DBE_DBCSCHAR` (0xF4) | Double-byte mode | → `true` |
+| `VK_KANJI` (0x19) | Half/full-width toggle | → flip |
+
+**Limitation:** The initial state is assumed `false` (alphanumeric). The flag becomes accurate after the first mode-switch key is pressed.
+
+### Context-Specific Baseline β (Dual Baseline)
+
+The `φ(x, β)` normalization function uses different reference values depending on the current IME mode, correcting a systematic bias:
+
+| Context | `IME_OPEN` | β\_F1 (ms) | β\_F3 | β\_F4 | β\_F5 | β\_F6 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **β\_coding** (A mode) | `false` | 150 | 0.06 | 5.0 | 2.0 | 0.08 |
+| **β\_writing** (あ/カ mode) | `true` | 220 | 0.08 | 2.0 | 4.0 | 0.12 |
+
+**Why this matters:** A coder at 150 ms flight time appears as Flow against β\_coding but would incorrectly appear as Stuck if evaluated against the slower β\_writing baseline (and vice versa). Context switching eliminates this systematic misclassification.
+
+IME mode changes are logged as a new record type:
+
+```jsonc
+// IME mode switch: user pressed VK_DBE_HIRAGANA (→ Japanese writing mode)
+{"type":"ime_state","t":1740000001234,"on":true}
+
+// IME mode switch: user pressed VK_DBE_ALPHANUMERIC (→ alphanumeric/coding mode)
+{"type":"ime_state","t":1740000005678,"on":false}
+```
+
+---
+
+## IME Mode Detection: Robust Multi-Layer Architecture (v2.3)
+
+Version 2.2 described the initial VK\_DBE\_\* based IME mode detection. Empirical testing on a Surface Pro 8 Type Cover revealed three additional failure modes that required a complete rework of the detection pipeline.
+
+### Bugs Found and Fixed
+
+**Bug 1 — Same-millisecond flapping** (log `gse_20260225_142614.ndjson`):
+The analysis thread emitted `ImeState` entries at the exact same millisecond as the triggering keystroke, producing `on:true` + `on:false` pairs with identical timestamps. Root cause: the analysis thread computed IME state synchronously from the keystroke event timestamp.
+
+**Bug 2 — Zero detections via `ImmGetContext`** (log `gse_20260225_153634.ndjson`):
+A pure polling approach using `ImmGetContext(foreground_hwnd)` returned NULL for all cross-process windows on Windows 10/11. The system silently produced zero `ime_state` entries.
+
+**Bug 3 — Surface Type Cover keyboard asymmetry** (log `gse_20260225_162114.ndjson`):
+On this specific keyboard, `VK_DBE_HIRAGANA` (0xF2) fires **only as key-UP** and `VK_DBE_ALPHANUMERIC` (0xF0) fires **only as key-DOWN**, always paired within the same millisecond. The `is_press`-only handler in v2.2 missed the hiragana key entirely.
+
+**Bug 4 — Initial state never emitted**:
+With `last_state: bool = false` and `IME_OPEN` initialized to `false`, pressing `VK_DBE_ALPHANUMERIC` set `IME_OPEN = false` (no change), making `false != false` evaluate to `false` — no emission.
+
+### v2.3 Architecture: Three Detection Layers
+
+```
+Layer 1 (Primary): ImmGetOpenStatus polling
+  └─ Works when ImmGetContext returns non-NULL (rare: own-process windows only)
+
+Layer 2 (Fallback): VK_DBE_* atomic tracking via IME_STATE_DIRTY flag
+  ├─ hook_callback sets IME_OPEN + IME_STATE_DIRTY on both key-DOWN and key-UP
+  └─ Covers Surface Type Cover asymmetry (VK_DBE_HIRAGANA key-UP only)
+
+Layer 3 (Inference): WinEvent EVENT_OBJECT_IME_CHANGE/SHOW
+  └─ Composition can ONLY start in Japanese mode → infer IME_OPEN=true cross-process
+```
+
+### Anti-Flapping Guarantee
+
+`LogEntry::ImeState` is emitted **exclusively** from the IME Polling Thread, never from the keyboard hook or analysis thread. The flow is:
+
+```
+hook_callback (key-DOWN or key-UP)
+    │  atomic store: IME_OPEN = new_state
+    │  atomic store: IME_STATE_DIRTY = true
+    └─ try_send(()) on bounded(1) wake channel (non-blocking, drops if full)
+
+IME Polling Thread
+    │  recv_timeout(100ms)   ← wakes within 1ms of keypress signal
+    │  sleep(5ms)            ← allows IME engine to settle
+    │  read IME_STATE_DIRTY  ← check if state changed
+    │  emit LogEntry::ImeState { timestamp: SystemTime::now(), on }
+    └─ timestamp is always ≥5ms after the triggering keystroke
+```
+
+### Key Atomics (`hook.rs`)
+
+| Atomic | Writer | Reader | Purpose |
+|---|---|---|---|
+| `IME_OPEN` | hook (VK_DBE_* ↑↓, WinEvent), polling thread | analysis thread | Current IME mode |
+| `IME_STATE_DIRTY` | hook (VK_DBE_* ↑↓, WinEvent composition start) | polling thread (`.swap(false)`) | Triggers log emission |
+| `IME_ACTIVE` | WinEvent hook (composition start/end) | ImeMonitor (100ms poll) | Candidate window pause |
+
+### `Option<bool>` Initial State
+
+The polling thread tracks `last_state: Option<bool> = None` (not `bool = false`). The comparison:
+
+```rust
+if last_state.map_or(true, |prev| prev != current) { emit(); last_state = Some(current); }
+```
+
+ensures the **first detection always emits** regardless of whether the initial state is `false` or `true`.
+
+### Production Verification
+
+Log `gse_20260225_172338.ndjson` confirms the fix:
+
+| Observation | Result |
+|---|---|
+| `ime_state` entries detected | **9** (vs. 0 in v2.2) |
+| Same-timestamp flapping | **None** |
+| Minimum key → ime\_state lag | **5 ms** (VK\_DBE\_* path) |
+| WinEvent composition inference lag | **~23–38 ms** |
+| Alternating on/false pattern | **Correct** |
 
 ---
 
@@ -448,4 +577,4 @@ Research prototype. All rights reserved.
 
 ---
 
-*Last updated: 2026-02-22*
+*Last updated: 2026-02-27*
