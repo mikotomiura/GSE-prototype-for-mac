@@ -1,0 +1,4 @@
+[build]
+# Limit parallel jobs to reduce peak RAM usage during compilation.
+# Tauri + windows crate is very heavy; default (= num CPUs) causes OOM on 8GB machines.
+jobs = 1

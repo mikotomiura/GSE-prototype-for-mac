@@ -43,9 +43,8 @@ windows = { version = "0.58", features = [
     "Foundation",
 ] }
 
-# Inference Engines
-ort = { version = "2.0.0-rc.0", features = ["load-dynamic"] }
-# karma = "0.1.0"
+# Inference Engines (ONNX Runtime — disabled: HMM is hand-coded, no inference needed yet)
+# ort = { version = "2.0.0-rc.0", features = ["load-dynamic"] }
 
 # Utilities
 crossbeam-channel = "0.5"
@@ -58,4 +57,5 @@ tracing-subscriber = "0.3.22"
 # per-variable DWARF info.  Runtime performance is completely unaffected.
 # This typically cuts target/debug/ from ~7GB down to ~3GB.
 [profile.dev]
-debug = 1
+debug = 0          # No debug symbols → linker uses ~60% less RAM (LNK1102 fix)
+split-debuginfo = "unpacked"
