@@ -2,3 +2,9 @@
 # Limit parallel jobs to reduce peak RAM usage during compilation.
 # Tauri + windows crate is very heavy; default (= num CPUs) causes OOM on 8GB machines.
 jobs = 1
+
+[env]
+# Tauri 2.x transitive deps (windows-0.61, windows-sys-0.61, icu_properties-2.x)
+# all have very deep macro expansion that overflows rustc thread stacks on Windows.
+# 16MB was insufficient for icu_properties; 64MB covers all known patterns.
+RUST_MIN_STACK = "67108864"

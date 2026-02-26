@@ -57,5 +57,20 @@ tracing-subscriber = "0.3.22"
 # per-variable DWARF info.  Runtime performance is completely unaffected.
 # This typically cuts target/debug/ from ~7GB down to ~3GB.
 [profile.dev]
-debug = 0          # No debug symbols → linker uses ~60% less RAM (LNK1102 fix)
+debug = 0              # No debug symbols → linker uses ~60% less RAM (LNK1102 fix)
 split-debuginfo = "unpacked"
+codegen-units = 1      # Single codegen unit: reduces peak per-crate RAM at cost of speed
+
+# Heavy Tauri transitive dependencies: compile with minimal settings to reduce RAM.
+# icu_properties-2.x and windows-sys-0.61 are the primary OOM culprits.
+[profile.dev.package."icu_properties"]
+opt-level = 0
+codegen-units = 1
+
+[profile.dev.package."windows-sys"]
+opt-level = 0
+codegen-units = 1
+
+[profile.dev.package."windows"]
+opt-level = 0
+codegen-units = 1
