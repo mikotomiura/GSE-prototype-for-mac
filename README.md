@@ -18,9 +18,11 @@
 7. [Hysteresis & Stability Fixes (v2.1)](#hysteresis--stability-fixes-v21)
 8. [IME Detection and Context-Aware Baseline (v2.2)](#ime-detection-and-context-aware-baseline-v22)
 9. [IME Mode Detection: Robust Multi-Layer Architecture (v2.3)](#ime-mode-detection-robust-multi-layer-architecture-v23)
-10. [Logging & Analysis](#logging--analysis)
-11. [Build Instructions](#build-instructions)
-12. [Academic References](#academic-references)
+10. [1Hz Timer-Driven Inference & Synthetic Friction (v2.4)](#1hz-timer-driven-inference--synthetic-friction-v24)
+11. [Intervention UI: Nudge & Wall (v2.5)](#intervention-ui-nudge--wall-v25)
+12. [Logging & Analysis](#logging--analysis)
+13. [Build Instructions](#build-instructions)
+14. [Academic References](#academic-references)
 
 ---
 
@@ -58,7 +60,7 @@ The three states are grounded in established cognitive science literature:
 │                                                 │ crossbeam channel │
 │                                      ┌──────────▼───────────────┐  │
 │                                      │  Analysis Thread (Rust)  │  │
-│                                      │                          │  │
+│                                      │  ── 1 Hz Timer Gate ──   │  │
 │                                      │  FeatureExtractor        │  │
 │                                      │    F1 flight-time median │  │
 │                                      │    F2 flight-time var.   │  │
@@ -75,9 +77,15 @@ The three states are grounded in established cognitive science literature:
 │                                      └──────────┬───────────────┘  │
 │                                                 │ Tauri IPC         │
 │                                      ┌──────────▼───────────────┐  │
-│                                      │   React/TS Dashboard     │  │
-│                                      │   Floating overlay       │  │
-│                                      │   Mist effect on Stuck   │  │
+│                                      │   React/TS Frontend      │  │
+│                                      │   Dashboard + Overlay    │  │
+│                                      │   Lv1 Nudge (red mist)   │  │
+│                                      │   Lv2 Wall  (full block) │  │
+│                                      └──────────┬───────────────┘  │
+│                                                 │ unlock            │
+│                                      ┌──────────┴───────────────┐  │
+│                                      │  Accelerometer (WinRT)   │  │
+│                                      │  Physical motion → unlock │  │
 │                                      └──────────────────────────┘  │
 │                                                 │                   │
 │                                      ┌──────────▼───────────────┐  │
@@ -96,12 +104,14 @@ Main Thread (Tauri event loop)
     ├─ Hook Thread            ← WH_KEYBOARD_LL message loop + WinEvent IME callbacks
     │       │ crossbeam::channel (bounded 64, non-blocking send)
     │       │ bounded(1) wake channel → IME Polling Thread
-    ├─ Analysis Thread        ← recv_timeout(1 s) drives HMM on keystrokes AND silence
+    ├─ Analysis Thread        ← recv_timeout(1 s) → 1 Hz timer gate; HMM update ≤ 1×/sec
     │       │ Arc<Mutex<CognitiveStateEngine>> (Tauri managed state)
+    │       │ Synthetic Friction: silence ≥ 20 s → ramps F6/F3 toward Stuck
     ├─ IME Monitor Thread     ← polls is_candidate_window_open() every 100 ms (composition pause)
     ├─ IME Polling Thread     ← recv_timeout(100 ms) wake; ImmGetOpenStatus + VK_DBE_* fallback
     │
-    └─ Logger Thread          ← bounded channel(512) → NDJSON file (BufWriter)
+    ├─ Logger Thread          ← bounded channel(512) → NDJSON file (BufWriter)
+    └─ Sensor Thread          ← Accelerometer (WinRT) → Wall unlock event
 ```
 
 ---
@@ -116,9 +126,9 @@ GSE-Next/
 │
 ├── src/                       # React / TypeScript frontend
 │   ├── components/
-│   │   ├── Dashboard.tsx      # State probability bars + mist effect overlay
-│   │   └── Overlay.tsx        # Transparent always-on-top window shell
-│   ├── App.tsx
+│   │   ├── Dashboard.tsx      # State probability bars + session info
+│   │   └── Overlay.tsx        # Nudge (red mist) + Wall (full-screen block)
+│   ├── App.tsx                # Intervention state machine (Lv1 → Lv2 escalation)
 │   └── main.tsx
 │
 ├── src-tauri/                 # Rust / Tauri 2.0 backend
@@ -465,6 +475,60 @@ Log `gse_20260225_172338.ndjson` confirms the fix:
 | Minimum key → ime\_state lag | **5 ms** (VK\_DBE\_* path) |
 | WinEvent composition inference lag | **~23–38 ms** |
 | Alternating on/false pattern | **Correct** |
+
+---
+
+## 1Hz Timer-Driven Inference & Synthetic Friction (v2.4)
+
+### Decoupling from Keystroke Events
+
+In the initial implementation, the HMM was updated synchronously on every keystroke. This caused the EMA hysteresis layer (τ ≈ 4 seconds) to behave inconsistently: during fast typing (10+ keys/sec), the α = 0.25 update accumulated far more than once per second, while during silence the system received no updates at all.
+
+**Fix:** The analysis thread now enforces a **1 Hz timer gate**. The `crossbeam::channel::recv_timeout(1000 ms)` call naturally provides a 1-second tick:
+
+- **Keystroke arrives within 1 s:** Event is buffered; features are extracted and accumulated, but `engine.update()` is called only if ≥ 1 second has elapsed since the last HMM step.
+- **Timeout (no input for 1 s):** A synthetic silence observation is generated via `make_silence_observation()` and fed to the HMM.
+
+This decoupling ensures exactly **one HMM forward step per second**, making the EMA time constant τ = 1/α ≈ 4 updates = **4 seconds** mathematically precise regardless of typing speed.
+
+### Synthetic Friction
+
+When the 1 Hz timer fires during extended silence, `make_silence_observation()` generates **synthetic friction** — artificial F3 (correction rate) and F6 (pause-after-delete rate) values that ramp up linearly with silence duration. This mechanism ensures that prolonged inactivity (≥ 50 s) transitions the HMM from Incubation to Stuck, reflecting the cognitive shift from deliberate pause to unproductive stalling. See **Fix ③** in the Hysteresis section above for the detailed derivation and trajectory table.
+
+---
+
+## Intervention UI: Nudge & Wall (v2.5)
+
+When the HMM detects a Stuck state, the system provides graduated intervention through Tauri's transparent multi-window overlay system.
+
+### Two-Level Intervention
+
+| Level | Name | Trigger | Visual Effect | User Interaction |
+| --- | --- | --- | --- | --- |
+| **Lv1** | Nudge | p\_stuck > 0.60 | Red vignette (mist) around screen edges | Click-through (transparent to input) |
+| **Lv2** | Wall | p\_stuck > 0.70 for 30 s | Full-screen blocking overlay with message | Blocks all input until unlocked |
+
+### Nudge (Lv1): Ambient Friction Cue
+
+The Nudge layer renders a semi-transparent red vignette overlay whose opacity scales linearly with the Stuck probability:
+
+```text
+opacity = clamp((p_stuck − 0.60) / 0.30, 0.0, 1.0)
+```
+
+The overlay window is set to **click-through** mode via Tauri's `setIgnoreCursorEvents(true)`, allowing the user to continue working while receiving a peripheral visual cue that they may be stuck.
+
+### Wall (Lv2): Forced Break
+
+If p\_stuck remains above 0.70 for 30 consecutive seconds, the system escalates to a Wall — a full-screen blocking overlay that requires **physical movement** to dismiss. The overlay displays:
+
+> *"Time to Move! Please stand up and walk around to unlock."*
+
+The Wall is unlocked by the **accelerometer** (via WinRT `Windows.Devices.Sensors.Accelerometer`). When sufficient physical motion is detected, a `"sensor-accelerometer"` event with `"move"` payload triggers the Wall to dismiss and reset the intervention timer.
+
+### Design Rationale
+
+This graduated intervention is grounded in the insight that cognitive blocks often persist because the writer lacks awareness of being stuck (metacognitive failure). The Nudge provides gentle awareness without disruption; the Wall enforces a physical context switch, which research suggests facilitates problem restructuring (Sio & Ormerod, 2009).
 
 ---
 
