@@ -15,6 +15,17 @@
         "title": "gse-next",
         "width": 800,
         "height": 600
+      },
+      {
+        "label": "overlay",
+        "title": "GSE Overlay",
+        "width": 800,
+        "height": 600,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "maximized": true,
+        "skipTaskbar": true
       }
     ],
     "security": {

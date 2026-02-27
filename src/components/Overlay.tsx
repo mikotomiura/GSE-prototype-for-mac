@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 interface OverlayProps {
     stuckProb: number;
@@ -7,6 +8,20 @@ interface OverlayProps {
 
 const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
     const [nudgeOpacity, setNudgeOpacity] = useState(0);
+    const currentWindow = useMemo(() => getCurrentWindow(), []);
+
+    // 透過背景を設定（overlay ウィンドウ用）
+    useEffect(() => {
+        document.documentElement.style.background = 'transparent';
+        document.body.style.background = 'transparent';
+    }, []);
+
+    // isWallActive に応じてクリック透過をトグル
+    // Lv1 (nudge): クリック透過 → ユーザーは下のウィンドウを操作可能
+    // Lv2 (wall):  クリックブロック → 物理的に動くまで操作不可
+    useEffect(() => {
+        currentWindow.setIgnoreCursorEvents(!isWallActive);
+    }, [isWallActive, currentWindow]);
 
     useEffect(() => {
         // Nudge Logic: visual feedback starts at 0.6 stuck probability

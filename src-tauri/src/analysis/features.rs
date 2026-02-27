@@ -277,16 +277,24 @@ impl FeatureExtractor {
         //   「現在タイピングしていない = Flight Time が事実上無限大」と解釈する。
         let f1 = 2000.0_f64;
 
-        // タイピングリズム系（F3/F4/F6）は0、F5（ポーズ回数）だけ沈黙の長さを反映。
+        // F5（ポーズ回数）: 沈黙の長さを反映。
         // F5定義: 「2秒以上の無入力回数」→ silence_secs / 2.0 で近似。
         // → Y = 0.25*(1-phi5): 沈黙が伸びるほど低下 → Incubation 領域へ引き寄せる。
+
+        // Synthetic Friction（合成摩擦値）:
+        // F5 だけでは Friction 軸 X が最大 0.45 に留まり x_bin=2 止まり。
+        // Incubation 領域（x=0..2）から Stuck 領域（x=3,4）へ遷移できない。
+        // 長期沈黙時に F6/F3 を漸増させ、Friction を引き上げて Stuck 判定を可能にする。
+        let f6_synthetic = ((silence_secs - 20.0) / 60.0).clamp(0.0, 0.50);
+        let f3_synthetic = ((silence_secs - 30.0) / 100.0).clamp(0.0, 0.40);
+
         Some(Features {
             f1_flight_time_median: f1,
             f2_flight_time_variance: 0.0,
-            f3_correction_rate: 0.0,
+            f3_correction_rate: f3_synthetic,
             f4_burst_length: 0.0,
             f5_pause_count: silence_secs / 2.0,
-            f6_pause_after_del_rate: 0.0,
+            f6_pause_after_del_rate: f6_synthetic,
         })
     }
 }
