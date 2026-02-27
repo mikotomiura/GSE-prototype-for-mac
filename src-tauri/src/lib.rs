@@ -187,10 +187,20 @@ pub fn run() {
     // イベント駆動 (rx.recv) の代わりに recv_timeout を使い、
     // 無入力期間中もタイマーでHMMを継続更新する。
     // これにより長時間ポーズ (Incubation/Stuck) を検出できる。
+    //
+    // 【Time Dilation バグ修正】
+    // engine.update() を打鍵ごとに呼ぶと、HMMの遷移確率(self=0.80→脱出5秒)と
+    // display_probs EMA(α=0.25→時定数4秒)が1Hz前提で設計されているため、
+    // 高速タイピング時に時間が「加速」してFLOWに急収束してしまう。
+    // 修正: last_engine_update で1Hzゲートを設け、打鍵頻度に関わらず
+    // engine.update() は最大1回/秒だけ呼び出す。
+    // extractor.process_event() は引き続き全打鍵で呼び出しバッファを最新に保つ。
     thread::spawn(move || {
         tracing::info!("Analysis thread started");
         let mut extractor = FeatureExtractor::new(600);
         let mut last_event_time = Instant::now();
+        // 初期値を1秒前に設定し、最初のキーストロークで即座に推論できるようにする
+        let mut last_engine_update = Instant::now() - Duration::from_secs(1);
 
         loop {
             match rx.recv_timeout(Duration::from_millis(1000)) {
@@ -202,7 +212,7 @@ pub fn run() {
                     last_event_time = Instant::now();
                     extractor.process_event(event);
 
-                    // キーイベントをログ記録
+                    // キーイベントをログ記録（全打鍵を記録、推論頻度とは独立）
                     let _ = log_tx_analysis.try_send(LogEntry::Key {
                         vk_code: event.vk_code,
                         timestamp: event.timestamp,
@@ -210,45 +220,56 @@ pub fn run() {
                     });
 
                     if event.is_press {
-                        // IMEモード（あ/A）はポーリングスレッドが100ms毎に更新するAtomicBoolを読む。
-                        // キーフックとの同一ミリ秒flappingはこれで完全に排除される。
-                        let ime_open = input::hook::IME_OPEN.load(Ordering::Relaxed);
+                        // 全打鍵でBackspaceストリークをカウント（1Hz gate の外側）。
+                        // engine.update() は1Hzだがストリーク検知は全打鍵で正確にカウントする。
+                        engine_for_thread.register_keystroke(event.vk_code);
 
-                        let features = extractor.calculate_features();
-                        engine_for_thread.update(&features, Some(event.vk_code), ime_open);
+                        // 1Hzゲート: 前回のengine.update()から1秒以上経過した場合のみ推論を実行。
+                        // HMMとEMAは1Hz前提で設計されているため、これより高頻度で呼ぶと
+                        // 時間が加速したように振る舞う（Time Dilation）。
+                        if last_engine_update.elapsed() >= Duration::from_secs(1) {
+                            last_engine_update = Instant::now();
 
-                        // 特徴量 + 状態確率をログ記録
-                        let state_probs = engine_for_thread.get_current_state();
-                        let p_flow = state_probs
-                            .get(&CognitiveState::Flow)
-                            .copied()
-                            .unwrap_or(0.0);
-                        let p_inc = state_probs
-                            .get(&CognitiveState::Incubation)
-                            .copied()
-                            .unwrap_or(0.0);
-                        let p_stuck = state_probs
-                            .get(&CognitiveState::Stuck)
-                            .copied()
-                            .unwrap_or(0.0);
+                            // IMEモード（あ/A）はポーリングスレッドが100ms毎に更新するAtomicBoolを読む。
+                            let ime_open = input::hook::IME_OPEN.load(Ordering::Relaxed);
 
-                        let _ = log_tx_analysis.try_send(LogEntry::Feat {
-                            timestamp: event.timestamp,
-                            f1: features.f1_flight_time_median,
-                            f2: features.f2_flight_time_variance,
-                            f3: features.f3_correction_rate,
-                            f4: features.f4_burst_length,
-                            f5: features.f5_pause_count,
-                            f6: features.f6_pause_after_del_rate,
-                            p_flow,
-                            p_inc,
-                            p_stuck,
-                        });
+                            let features = extractor.calculate_features();
+                            engine_for_thread.update(&features, ime_open);
+
+                            // 特徴量 + 状態確率をログ記録
+                            let state_probs = engine_for_thread.get_current_state();
+                            let p_flow = state_probs
+                                .get(&CognitiveState::Flow)
+                                .copied()
+                                .unwrap_or(0.0);
+                            let p_inc = state_probs
+                                .get(&CognitiveState::Incubation)
+                                .copied()
+                                .unwrap_or(0.0);
+                            let p_stuck = state_probs
+                                .get(&CognitiveState::Stuck)
+                                .copied()
+                                .unwrap_or(0.0);
+
+                            let _ = log_tx_analysis.try_send(LogEntry::Feat {
+                                timestamp: event.timestamp,
+                                f1: features.f1_flight_time_median,
+                                f2: features.f2_flight_time_variance,
+                                f3: features.f3_correction_rate,
+                                f4: features.f4_burst_length,
+                                f5: features.f5_pause_count,
+                                f6: features.f6_pause_after_del_rate,
+                                p_flow,
+                                p_inc,
+                                p_stuck,
+                            });
+                        }
                     }
                 }
 
                 Err(RecvTimeoutError::Timeout) => {
-                    // 無入力期間の検出: サイレンス特徴量でHMMを更新する
+                    // 無入力期間の検出: サイレンス特徴量でHMMを更新する。
+                    // recv_timeout(1000ms) のタイムアウトにより自然に ~1Hz となる。
                     if engine_for_thread.get_paused() {
                         continue;
                     }
@@ -256,7 +277,8 @@ pub fn run() {
                     if let Some(sf) = extractor.make_silence_observation(silence_secs) {
                         // サイレンス中も現在のIMEモードを使用
                         let ime_open = input::hook::IME_OPEN.load(Ordering::Relaxed);
-                        engine_for_thread.update(&sf, None, ime_open);
+                        engine_for_thread.update(&sf, ime_open);
+                        last_engine_update = Instant::now();
 
                         let state_probs = engine_for_thread.get_current_state();
                         let p_flow = state_probs

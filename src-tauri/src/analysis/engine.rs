@@ -41,16 +41,16 @@ pub struct CognitiveStateEngine {
 impl CognitiveStateEngine {
     pub fn new() -> Self {
         // Transition probabilities
-        // FLOW -> FLOW: 0.80  (escape time 1/(1-0.80)=5s; reduced from 0.92 to prevent saturation)
-        // FLOW -> INCUBATION: 0.13
-        // FLOW -> STUCK: 0.07
+        // FLOW -> FLOW: 0.75  (escape time 1/(1-0.75)=4s; reduced from 0.80 to mitigate Flow Gravity)
+        // FLOW -> INCUBATION: 0.17
+        // FLOW -> STUCK: 0.08
         // INCUBATION -> FLOW: 0.12
         // INCUBATION -> INCUBATION: 0.80  (Sio & Ormerod 2009)
         // INCUBATION -> STUCK: 0.08
         // STUCK -> FLOW: 0.06
         // STUCK -> INCUBATION: 0.18
         // STUCK -> STUCK: 0.76  (Hall et al. 2024)
-        let transitions = [0.80, 0.13, 0.07, 0.12, 0.80, 0.08, 0.06, 0.18, 0.76];
+        let transitions = [0.75, 0.17, 0.08, 0.12, 0.80, 0.08, 0.06, 0.18, 0.76];
 
         // Emissions B: 3 states × 26 bins
         //
@@ -73,11 +73,11 @@ impl CognitiveStateEngine {
         // Each state's non-penalty bins sum to ≈1.0; HMM normalizes anyway.
         #[rustfmt::skip]
         let emissions: [f64; 78] = [
-            // ── Flow (State 0) ─────────────────────────── non-penalty sum = 1.00
+            // ── Flow (State 0) ─────────────────────────── non-penalty sum ≈ 0.85
             //  x=0 (low F)    y: 0     1     2     3     4
-                               0.01, 0.02, 0.05, 0.16, 0.20,
+                               0.01, 0.02, 0.05, 0.12, 0.14,
             //  x=1            y: 0     1     2     3     4
-                               0.01, 0.02, 0.05, 0.14, 0.16,
+                               0.01, 0.02, 0.05, 0.12, 0.13,
             //  x=2            y: 0     1     2     3     4
                                0.00, 0.01, 0.03, 0.06, 0.08,
             //  x=3            y: 0     1     2     3     4
@@ -87,11 +87,11 @@ impl CognitiveStateEngine {
             //  penalty bin
                                0.00,
 
-            // ── Incubation (State 1) ──────────────────── non-penalty sum = 1.00
+            // ── Incubation (State 1) ──────────────────── non-penalty sum ≈ 1.07
             //  x=0 (low F)    y: 0     1     2     3     4
-                               0.15, 0.10, 0.04, 0.01, 0.00,
+                               0.15, 0.10, 0.04, 0.03, 0.02,
             //  x=1            y: 0     1     2     3     4
-                               0.14, 0.10, 0.04, 0.01, 0.00,
+                               0.14, 0.10, 0.04, 0.03, 0.02,
             //  x=2            y: 0     1     2     3     4
                                0.10, 0.08, 0.03, 0.01, 0.00,
             //  x=3            y: 0     1     2     3     4
@@ -157,6 +157,28 @@ impl CognitiveStateEngine {
         match self.axes_ewma.lock() {
             Ok(mut e) => *e = (0.0, 1.0),
             Err(poisoned) => *poisoned.into_inner() = (0.0, 1.0),
+        }
+    }
+
+    /// 全キー押下時に呼び出し、Backspaceストリークをリアルタイムでカウントする。
+    /// 1Hz gate の外側（全打鍵）で呼ぶことで、高速Backspace連打を正確に検知する。
+    pub fn register_keystroke(&self, vk_code: u32) {
+        match self.backspace_streak.lock() {
+            Ok(mut s) => {
+                if vk_code == 0x08 {
+                    *s += 1;
+                } else {
+                    *s = 0;
+                }
+            }
+            Err(poisoned) => {
+                let mut s = poisoned.into_inner();
+                if vk_code == 0x08 {
+                    *s += 1;
+                } else {
+                    *s = 0;
+                }
+            }
         }
     }
 
@@ -254,7 +276,7 @@ impl CognitiveStateEngine {
     ///
     /// `ime_open`: true = Japanese IME is in Japanese-input mode (あ/カ).
     /// Used to select context-appropriate β values in `calculate_latent_axes`.
-    pub fn update(&self, features: &Features, vk_code: Option<u32>, ime_open: bool) {
+    pub fn update(&self, features: &Features, ime_open: bool) {
         if self.get_paused() {
             return;
         }
@@ -265,28 +287,26 @@ impl CognitiveStateEngine {
         }
 
         // --- Backspace Streak Logic ---
-        // 5回以上の連続Backspaceを「大きな修正＝Stuck」とする安全装置
-        let streak = match self.backspace_streak.lock() {
+        // register_keystroke() が全打鍵でカウントを更新済み。
+        // ここでは現在値を読み取り、ペナルティ適用後にリセットするのみ。
+        let (apply_backspace_penalty, streak) = match self.backspace_streak.lock() {
             Ok(mut s) => {
-                if vk_code == Some(0x08) {
-                    // VK_BACK
-                    *s += 1;
-                } else if vk_code.is_some() {
-                    *s = 0;
+                let val = *s;
+                if val >= 5 {
+                    *s = 0; // ペナルティ適用後リセット: Stuck張り付き防止
                 }
-                *s
+                (val >= 5, val)
             }
             Err(poisoned) => {
                 let mut s = poisoned.into_inner();
-                if vk_code == Some(0x08) {
-                    *s += 1;
-                } else if vk_code.is_some() {
+                let val = *s;
+                if val >= 5 {
                     *s = 0;
                 }
-                *s
+                (val >= 5, val)
             }
         };
-        let apply_backspace_penalty = streak >= 5;
+        let _ = streak; // suppress unused warning (streak value used only for threshold check)
 
         let (raw_x, raw_y) = self.calculate_latent_axes(features, ime_open);
 
@@ -329,9 +349,9 @@ impl CognitiveStateEngine {
 
         // Forward Algorithm Step
         // ε-floor: 放射確率の最小値を保証し、単一観測で状態確率が完全に0になることを防ぐ。
-        // 0.04 (旧: 0.01) に引き上げることで「段階的天井」クラスタリングを緩和する。
-        // 最大 p ≈ 0.88–0.90 程度に収まり、状態間の確率変化が滑らかになる。
-        const EMISSION_FLOOR: f64 = 0.04;
+        // 0.05 (旧: 0.04) に引き上げることでFlow Gravityをさらに緩和する。
+        // 最大 p ≈ 0.85–0.89 程度に収まり、状態間の確率変化が滑らかになる。
+        const EMISSION_FLOOR: f64 = 0.05;
 
         let mut sum_prob = 0.0;
 
