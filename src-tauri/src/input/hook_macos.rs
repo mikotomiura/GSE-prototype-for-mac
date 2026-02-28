@@ -14,7 +14,7 @@ use core_graphics::event::{
 
 use crate::analysis::features::InputEvent;
 use super::{
-    EVENT_SENDER, IME_OPEN, IME_STATE_DIRTY, POLL_WAKE_TX,
+    EVENT_SENDER, IME_OPEN, IME_STATE_DIRTY, JIS_KEYBOARD_SEEN, POLL_WAKE_TX,
     VK_DBE_ALPHANUMERIC, VK_DBE_DBCSCHAR, VK_DBE_HIRAGANA, VK_DBE_KATAKANA,
     VK_DBE_SBCSCHAR, VK_KANJI,
 };
@@ -155,14 +155,17 @@ fn handle_event(event_type: CGEventType, event: &CGEvent) {
     if is_press {
         match vk_code {
             VK_DBE_ALPHANUMERIC | VK_DBE_SBCSCHAR => {
+                JIS_KEYBOARD_SEEN.store(true, Ordering::Relaxed);
                 IME_OPEN.store(false, Ordering::Release);
                 IME_STATE_DIRTY.store(true, Ordering::Release);
             }
             VK_DBE_KATAKANA | VK_DBE_HIRAGANA | VK_DBE_DBCSCHAR => {
+                JIS_KEYBOARD_SEEN.store(true, Ordering::Relaxed);
                 IME_OPEN.store(true, Ordering::Release);
                 IME_STATE_DIRTY.store(true, Ordering::Release);
             }
             VK_KANJI => {
+                JIS_KEYBOARD_SEEN.store(true, Ordering::Relaxed);
                 let current = IME_OPEN.load(Ordering::Relaxed);
                 IME_OPEN.store(!current, Ordering::Release);
                 IME_STATE_DIRTY.store(true, Ordering::Release);

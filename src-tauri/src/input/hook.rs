@@ -44,6 +44,15 @@ pub fn is_ime_open() -> bool {
 /// The IME open polling thread reads this to emit LogEntry::ImeState with a fresh timestamp.
 pub static IME_STATE_DIRTY: AtomicBool = AtomicBool::new(false);
 
+/// Set to true once any JIS IME key (VK_KANJI or VK_DBE_*) has been observed.
+///
+/// macOS uses per-app input source switching by default, which means
+/// TISCopyCurrentKeyboardInputSource() always returns GSE's own source (ABC),
+/// NOT the foreground app's source.  Once we see a physical JIS key we know
+/// the user has a JIS keyboard, so we disable TIS polling and trust IME_OPEN
+/// (managed by the hook callback) as the single source of truth.
+pub static JIS_KEYBOARD_SEEN: AtomicBool = AtomicBool::new(false);
+
 lazy_static! {
     pub static ref EVENT_SENDER: Mutex<Option<Sender<InputEvent>>> = Mutex::new(None);
     /// Wake channel for the IME open polling thread.

@@ -35,10 +35,24 @@ impl ImeMonitor {
 // ---------------------------------------------------------------------------
 // spawn_ime_open_polling_thread — IME open/close state machine
 //
-// - recv_timeout(100ms) idle poll with wake-on-keystroke optimization
-// - last_state deduplication (emit only on change)
-// - Detection: TIS TISCopyCurrentKeyboardInputSource + "inputmethod.Japanese" check
-//   (runs on main GCD queue via dispatch_sync_f)
+// Detection strategy (two paths):
+//
+// Path A — JIS physical keys (fast, ~5ms):
+//   CGEventTap in hook_macos.rs sets IME_OPEN + IME_STATE_DIRTY on
+//   kVK_JIS_Eisu / kVK_JIS_Kana press. We trust this directly and skip TIS.
+//   Reason: TIS returns the GSE *process-own* input source (always ABC),
+//   not the foreground app's source, because macOS uses per-app input source
+//   switching by default. CGEventTap is system-wide, so IME_OPEN is correct.
+//
+// Path B — ANSI/US keyboards (100ms TIS poll):
+//   When no JIS key has ever been observed (JIS_KEYBOARD_SEEN = false),
+//   fall back to TIS to detect menu-bar switches on ANSI keyboards.
+//
+//   IMPORTANT: Once any JIS key is observed (JIS_KEYBOARD_SEEN = true),
+//   Path B is permanently disabled. TIS always returns GSE's own source (ABC)
+//   on per-app input source systems (macOS default), so using TIS after a JIS
+//   key press would immediately reset IME_OPEN to false — masking the correct
+//   state set by Path A. On JIS keyboards we rely exclusively on IME_OPEN.
 // ---------------------------------------------------------------------------
 pub fn spawn_ime_open_polling_thread(
     log_tx: Sender<LogEntry>,
@@ -54,23 +68,33 @@ pub fn spawn_ime_open_polling_thread(
                 .is_ok();
 
             if woke_by_key {
-                // Brief delay: lets the OS process the keypress through the IME engine
-                // so that platform state (ImmGetOpenStatus / TIS) reflects the new mode.
+                // Brief delay: lets the OS process the keypress through the IME engine.
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
 
-            // ── macOS primary: TIS input source check ─────────────────────────
-            let current_state = ime_macos::is_japanese_ime_open();
+            // ── Path A: JIS key was detected by CGEventTap ────────────────────
+            // swap(false) atomically drains the dirty flag.
+            let dirty = crate::input::hook::IME_STATE_DIRTY.swap(false, Ordering::AcqRel);
+
+            let current_state = if dirty {
+                // ── Path A: JIS key was detected by CGEventTap ────────────────────
+                // Trust IME_OPEN set by hook callback — system-wide JIS key evidence.
+                crate::input::hook::IME_OPEN.load(Ordering::Acquire)
+            } else if crate::input::hook::JIS_KEYBOARD_SEEN.load(Ordering::Acquire) {
+                // ── JIS keyboard mode: skip TIS, trust hook state ─────────────────
+                // TIS returns GSE's own source (always ABC) on per-app systems,
+                // which would immediately undo Path A's correct state.
+                crate::input::hook::IME_OPEN.load(Ordering::Acquire)
+            } else {
+                // ── Path B: ANSI keyboard — TIS poll (menu-bar switch fallback) ───
+                ime_macos::is_japanese_ime_open()
+            };
 
             if last_state.map_or(true, |prev| prev != current_state) {
                 last_state = Some(current_state);
                 crate::input::hook::IME_OPEN.store(current_state, Ordering::Relaxed);
                 emit_ime_state(&log_tx, current_state);
             }
-
-            // Drain VK_DBE_* dirty flag set by hook callback for JIS keys.
-            // TIS always succeeds, so this is just housekeeping.
-            crate::input::hook::IME_STATE_DIRTY.store(false, Ordering::Relaxed);
         }
     });
 }
