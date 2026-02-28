@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 src-tauri/gen/
 src-tauri/target/
+
+# Claude Code local settings (machine-specific, not for version control)
+.claude/settings.local.json
