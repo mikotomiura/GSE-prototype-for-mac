@@ -25,5 +25,5 @@ dist-ssr
 src-tauri/gen/
 src-tauri/target/
 
-# Claude Code local settings (machine-specific, not for version control)
-.claude/settings.local.json
+# Claude Code internal files (machine-specific, not for version control)
+.claude/
