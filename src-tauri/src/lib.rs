@@ -51,6 +51,18 @@ fn get_cognitive_state(state: State<CognitiveStateEngine>) -> HashMap<String, f6
     map
 }
 
+/// キーボードフック（Input Monitoring）の状態を返す。
+/// Windows: 常に true（権限不要）。
+/// macOS: CGEventTap が正常にインストールされている場合のみ true。
+///        false の場合はフロントエンドで権限バナーを表示する。
+#[tauri::command]
+fn get_hook_status() -> bool {
+    #[cfg(target_os = "macos")]
+    return crate::input::hook::hook_macos::HOOK_ACTIVE.load(std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(target_os = "macos"))]
+    return true;
+}
+
 /// 現在のセッションログファイルのパスを返す (UI表示用)
 #[tauri::command]
 fn get_session_file(log: State<Arc<Mutex<LogState>>>) -> String {
@@ -107,12 +119,10 @@ fn quit_app(app: tauri::AppHandle, log: State<Arc<Mutex<LogState>>>) {
             }
         }
 
-        // セッションフォルダを Explorer で開く
+        // セッションフォルダをFinderで開く
         if let Some(folder) = Path::new(&session_path).parent() {
             tracing::info!("Opening session folder: {:?}", folder);
-            let _ = std::process::Command::new("explorer")
-                .arg(folder)
-                .spawn();
+            let _ = std::process::Command::new("open").arg(folder).spawn();
         }
 
         thread::sleep(std::time::Duration::from_millis(200));
@@ -364,6 +374,7 @@ pub fn run() {
             get_cognitive_state,
             quit_app,
             get_session_file,
+            get_hook_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

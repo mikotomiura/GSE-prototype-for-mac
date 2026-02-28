@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>GSE はキーストロークのタイミングデータを収集して認知状態を推定します。キーの内容（文字）は一切記録されません。</string>
+    <key>NSMotionUsageDescription</key>
+    <string>GSE は身体的な動きを Stuck 状態から抜け出すトリガーとして使用します。</string>
+</dict>
+</plist>

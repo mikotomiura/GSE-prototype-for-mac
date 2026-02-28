@@ -24,10 +24,19 @@ function App() {
     stuck: 0.8,
   });
   const [isWallActive, setIsWallActive] = useState(false);
+  // null = 初回確認中, true = フック有効, false = 権限未付与
+  const [hookActive, setHookActive] = useState<boolean | null>(null);
 
   // D-1: getCurrentWindow() を useMemo でメモ化し不要な再生成を防止
   const currentWindow = useMemo(() => getCurrentWindow(), []);
   const windowLabel = currentWindow.label;
+
+  // 1. フック（Input Monitoring）権限チェック — 起動直後に1回確認
+  useEffect(() => {
+    invoke<boolean>("get_hook_status")
+      .then(setHookActive)
+      .catch(() => setHookActive(true)); // エラー時は楽観的に true
+  }, []);
 
   // 2. Poll Cognitive State (Every 500ms)
   useEffect(() => {
@@ -86,7 +95,11 @@ function App() {
 
   // Default to Main Dashboard
   return (
-    <Dashboard cognitiveState={cognitiveState} onQuit={handleQuit} />
+    <Dashboard
+      cognitiveState={cognitiveState}
+      onQuit={handleQuit}
+      hookActive={hookActive}
+    />
   );
 }
 
