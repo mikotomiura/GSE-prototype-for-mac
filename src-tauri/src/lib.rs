@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod input;
 pub mod logger;
 pub mod sensors;
+pub mod wall_server;
 
 use crate::analysis::{
     engine::{CognitiveState, CognitiveStateEngine},
@@ -59,6 +60,37 @@ fn get_hook_status() -> bool {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Wall Server 状態
+// ---------------------------------------------------------------------------
+
+type WallServerState = Arc<Mutex<Option<wall_server::WallServer>>>;
+
+/// Wall unlock サーバーを起動し、QR コード SVG と URL を返す。
+/// 既に起動中の場合は既存の情報を返す。
+#[tauri::command]
+fn start_wall_server(
+    app: tauri::AppHandle,
+    wall: State<WallServerState>,
+) -> Result<wall_server::WallServerInfo, String> {
+    let mut guard = wall.lock().map_err(|e| e.to_string())?;
+    if let Some(ref existing) = *guard {
+        return Ok(existing.info().clone());
+    }
+    let (server, info) = wall_server::WallServer::start(app)?;
+    *guard = Some(server);
+    Ok(info)
+}
+
+/// Wall unlock サーバーを停止する。
+#[tauri::command]
+fn stop_wall_server(wall: State<WallServerState>) {
+    let mut guard = wall.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(server) = guard.take() {
+        server.stop();
+    }
+}
+
 /// 現在のセッションログファイルのパスを返す (UI表示用)
 #[tauri::command]
 fn get_session_file(log: State<Arc<Mutex<LogState>>>) -> String {
@@ -73,7 +105,15 @@ fn get_session_file(log: State<Arc<Mutex<LogState>>>) -> String {
 ///   2. behavioral_gt.py でラベリング分析を実行 (Python が PATH にある場合)
 ///   3. セッションフォルダを Explorer で開く
 #[tauri::command]
-fn quit_app(app: tauri::AppHandle, log: State<Arc<Mutex<LogState>>>) {
+fn quit_app(app: tauri::AppHandle, log: State<Arc<Mutex<LogState>>>, wall: State<WallServerState>) {
+    // Wall server をクリーンアップ
+    {
+        let mut guard = wall.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(server) = guard.take() {
+            server.stop();
+        }
+    }
+
     // ログ終了マーカーを送信し、シャットダウン完了チャネルを取得
     let (session_path, shutdown_rx) = {
         let guard = log.lock().unwrap_or_else(|p| p.into_inner());
@@ -355,6 +395,9 @@ pub fn run() {
     // キーボードフック開始 (set_poll_wake_sender の後に呼ぶこと)
     input::hook::init_hook(tx);
 
+    // Wall unlock サーバー状態
+    let wall_state: WallServerState = Arc::new(Mutex::new(None));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -366,11 +409,14 @@ pub fn run() {
         })
         .manage(engine)
         .manage(log_state)
+        .manage(wall_state)
         .invoke_handler(tauri::generate_handler![
             get_cognitive_state,
             quit_app,
             get_session_file,
             get_hook_status,
+            start_wall_server,
+            stop_wall_server,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

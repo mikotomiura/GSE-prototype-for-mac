@@ -8,8 +8,8 @@
 // - Accelerometer: stub (not available) — MacBook HW support can be added later
 // - Geolocation:   not implemented (unused in HMM features F1-F6)
 //
-// Impact: The "sensor-accelerometer" Tauri event is never emitted on macOS.
-// The App.tsx wall-unlock feature (shake to escape Stuck state) will not trigger.
+// Impact: Native accelerometer events are not emitted on macOS.
+// Wall unlock uses smartphone QR code + DeviceMotion instead (see wall_server.rs).
 // All core Flow/Incubation/Stuck estimation via keystroke dynamics is unaffected.
 
 use tauri::{AppHandle, Runtime};
@@ -25,10 +25,9 @@ impl<R: Runtime> SensorManager<R> {
     }
 
     pub fn start_monitoring(&self) {
-        tracing::warn!(
-            "SensorManager: accelerometer monitoring not implemented on macOS. \
-             Keystroke dynamics features (F1-F6) are unaffected. \
-             The shake-to-unlock Stuck wall will not trigger."
+        tracing::info!(
+            "SensorManager: native accelerometer not available on macOS. \
+             Wall unlock uses smartphone QR code motion detection instead."
         );
         // No sensor threads spawned on macOS.
     }
