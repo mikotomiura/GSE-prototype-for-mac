@@ -25,16 +25,12 @@ use tauri::{Manager, State};
 struct LogState {
     tx: Sender<LogEntry>,
     path: String,
+    shutdown_rx: crossbeam_channel::Receiver<()>,
 }
 
 // ---------------------------------------------------------------------------
 // Tauri コマンド
 // ---------------------------------------------------------------------------
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
 
 #[tauri::command]
 fn get_cognitive_state(state: State<CognitiveStateEngine>) -> HashMap<String, f64> {
@@ -78,19 +74,19 @@ fn get_session_file(log: State<Arc<Mutex<LogState>>>) -> String {
 ///   3. セッションフォルダを Explorer で開く
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle, log: State<Arc<Mutex<LogState>>>) {
-    // ログ終了マーカーを送信
-    let session_path = {
+    // ログ終了マーカーを送信し、シャットダウン完了チャネルを取得
+    let (session_path, shutdown_rx) = {
         let guard = log.lock().unwrap_or_else(|p| p.into_inner());
         let _ = guard.tx.try_send(LogEntry::End);
-        guard.path.clone()
+        (guard.path.clone(), guard.shutdown_rx.clone())
     };
 
     let app_handle = app.clone();
 
     // バックグラウンドスレッドで分析→フォルダ表示→アプリ終了
     thread::spawn(move || {
-        // ロガースレッドにファイルを閉じる時間を与える
-        thread::sleep(std::time::Duration::from_millis(400));
+        // ロガースレッドの終了を確実に待機（最大2秒）
+        let _ = shutdown_rx.recv_timeout(std::time::Duration::from_secs(2));
 
         // behavioral_gt.py を探して実行
         match find_behavioral_gt() {
@@ -175,12 +171,13 @@ pub fn run() {
     let log_path_str = log_path.to_string_lossy().to_string();
     tracing::info!("Session log: {}", log_path_str);
 
-    let (_session_logger, log_tx) = SessionLogger::start(log_path);
+    let (_session_logger, log_tx, log_shutdown_rx) = SessionLogger::start(log_path);
 
     // LogState を Arc<Mutex> でラップして Tauri state に渡す
     let log_state = Arc::new(Mutex::new(LogState {
         tx: log_tx.clone(),
         path: log_path_str,
+        shutdown_rx: log_shutdown_rx,
     }));
 
     // キーストローク入力チャネル
@@ -370,7 +367,6 @@ pub fn run() {
         .manage(engine)
         .manage(log_state)
         .invoke_handler(tauri::generate_handler![
-            greet,
             get_cognitive_state,
             quit_app,
             get_session_file,

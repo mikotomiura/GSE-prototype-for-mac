@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::analysis::features::{phi, Features};
@@ -24,8 +25,8 @@ pub struct CognitiveStateEngine {
     emissions: Arc<[f64; 78]>,
 
     current_state_probs: Arc<Mutex<[f64; 3]>>,
-    pub is_paused: Arc<Mutex<bool>>,
-    pub backspace_streak: Arc<Mutex<u32>>,
+    pub is_paused: Arc<AtomicBool>,
+    pub backspace_streak: Arc<AtomicU32>,
 
     // 2-axis EWMA: (X = Friction, Y = Engagement)
     // α = 0.3: 新値30%、前値70%のブレンド
@@ -123,8 +124,8 @@ impl CognitiveStateEngine {
             transitions: Arc::new(transitions),
             emissions: Arc::new(emissions),
             current_state_probs: Arc::new(Mutex::new(initial_probs)),
-            is_paused: Arc::new(Mutex::new(false)),
-            backspace_streak: Arc::new(Mutex::new(0)),
+            is_paused: Arc::new(AtomicBool::new(false)),
+            backspace_streak: Arc::new(AtomicU32::new(0)),
             // (0.3, 0.5) = 中立領域で初期化 (obs=7; Flow/Inc/Stuck がほぼ均等な観測ビン)
             // (0.0, 1.0) で開始すると初回更新で p_flow=1.0 に固定されるため変更
             axes_ewma: Arc::new(Mutex::new((0.3, 0.5))),
@@ -134,10 +135,7 @@ impl CognitiveStateEngine {
     }
 
     pub fn set_paused(&self, paused: bool) {
-        match self.is_paused.lock() {
-            Ok(mut p) => *p = paused,
-            Err(poisoned) => *poisoned.into_inner() = paused,
-        }
+        self.is_paused.store(paused, Ordering::Release);
     }
 
     /// IME active時に強制的にFlow状態にする (Stuck表示を消す)
@@ -163,47 +161,16 @@ impl CognitiveStateEngine {
     /// 全キー押下時に呼び出し、Backspaceストリークをリアルタイムでカウントする。
     /// 1Hz gate の外側（全打鍵）で呼ぶことで、高速Backspace連打を正確に検知する。
     pub fn register_keystroke(&self, vk_code: u32) {
-        match self.backspace_streak.lock() {
-            Ok(mut s) => {
-                if vk_code == 0x08 {
-                    *s += 1;
-                } else {
-                    *s = 0;
-                }
-            }
-            Err(poisoned) => {
-                let mut s = poisoned.into_inner();
-                if vk_code == 0x08 {
-                    *s += 1;
-                } else {
-                    *s = 0;
-                }
-            }
+        if vk_code == 0x08 {
+            self.backspace_streak.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.backspace_streak.store(0, Ordering::Relaxed);
         }
     }
 
     /// IMEポーズ中かどうかを安全に取得する
     pub fn get_paused(&self) -> bool {
-        match self.is_paused.lock() {
-            Ok(g) => *g,
-            Err(poisoned) => *poisoned.into_inner(),
-        }
-    }
-
-    pub fn discretize_flight_time(&self, ft: f64) -> usize {
-        match ft {
-            t if t < 80.0 => 0,
-            t if t < 120.0 => 1,
-            t if t < 160.0 => 2,
-            t if t < 200.0 => 3,
-            t if t < 300.0 => 4,
-            t if t < 400.0 => 5,
-            t if t < 500.0 => 6,
-            t if t < 700.0 => 7,
-            t if t < 1000.0 => 8,
-            t if t < 1500.0 => 9,
-            _ => 10,
-        }
+        self.is_paused.load(Ordering::Acquire)
     }
 
     /// X軸 (Friction / 摩擦) と Y軸 (Engagement / 没入度) を算出する。
@@ -289,24 +256,11 @@ impl CognitiveStateEngine {
         // --- Backspace Streak Logic ---
         // register_keystroke() が全打鍵でカウントを更新済み。
         // ここでは現在値を読み取り、ペナルティ適用後にリセットするのみ。
-        let (apply_backspace_penalty, streak) = match self.backspace_streak.lock() {
-            Ok(mut s) => {
-                let val = *s;
-                if val >= 5 {
-                    *s = 0; // ペナルティ適用後リセット: Stuck張り付き防止
-                }
-                (val >= 5, val)
-            }
-            Err(poisoned) => {
-                let mut s = poisoned.into_inner();
-                let val = *s;
-                if val >= 5 {
-                    *s = 0;
-                }
-                (val >= 5, val)
-            }
-        };
-        let _ = streak; // suppress unused warning (streak value used only for threshold check)
+        let streak = self.backspace_streak.load(Ordering::Relaxed);
+        let apply_backspace_penalty = streak >= 5;
+        if apply_backspace_penalty {
+            self.backspace_streak.store(0, Ordering::Relaxed); // ペナルティ適用後リセット: Stuck張り付き防止
+        }
 
         let (raw_x, raw_y) = self.calculate_latent_axes(features, ime_open);
 

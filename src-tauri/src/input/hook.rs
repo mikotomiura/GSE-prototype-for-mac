@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use crossbeam_channel::Sender;
-use lazy_static::lazy_static;
 
 use crate::analysis::features::InputEvent;
 
@@ -53,12 +52,10 @@ pub static IME_STATE_DIRTY: AtomicBool = AtomicBool::new(false);
 /// (managed by the hook callback) as the single source of truth.
 pub static JIS_KEYBOARD_SEEN: AtomicBool = AtomicBool::new(false);
 
-lazy_static! {
-    pub static ref EVENT_SENDER: Mutex<Option<Sender<InputEvent>>> = Mutex::new(None);
-    /// Wake channel for the IME open polling thread.
-    /// Signalled on every keypress so the polling thread updates within ~5ms.
-    pub static ref POLL_WAKE_TX: Mutex<Option<Sender<()>>> = Mutex::new(None);
-}
+pub static EVENT_SENDER: Mutex<Option<Sender<InputEvent>>> = Mutex::new(None);
+/// Wake channel for the IME open polling thread.
+/// Signalled on every keypress so the polling thread updates within ~5ms.
+pub static POLL_WAKE_TX: Mutex<Option<Sender<()>>> = Mutex::new(None);
 
 /// Store the polling thread's wake channel sender.
 /// Must be called before `init_hook` so the sender is ready when the hook fires.

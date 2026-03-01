@@ -166,8 +166,7 @@ fn handle_event(event_type: CGEventType, event: &CGEvent) {
             }
             VK_KANJI => {
                 JIS_KEYBOARD_SEEN.store(true, Ordering::Relaxed);
-                let current = IME_OPEN.load(Ordering::Relaxed);
-                IME_OPEN.store(!current, Ordering::Release);
+                IME_OPEN.fetch_xor(true, Ordering::AcqRel);
                 IME_STATE_DIRTY.store(true, Ordering::Release);
             }
             _ => {}

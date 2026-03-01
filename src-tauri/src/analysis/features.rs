@@ -133,10 +133,7 @@ impl FeatureExtractor {
             return Features::default();
         }
 
-        // --- F1: Flight Time 中央値 (既存メソッドを利用) ---
-        let f1 = self.calculate_flight_time_median();
-
-        // --- ウィンドウ内のフライトタイムを再計算 (F2用) ---
+        // --- ウィンドウ内のフライトタイムを計算 (F1, F2 共通: 直近30秒) ---
         let mut window_fts: Vec<f64> = Vec::new();
         let mut last_release: Option<u64> = None;
         for event in &events {
@@ -153,6 +150,20 @@ impl FeatureExtractor {
                 last_release = Some(event.timestamp);
             }
         }
+
+        // --- F1: Flight Time 中央値 (直近30秒ウィンドウ) ---
+        let f1 = if window_fts.is_empty() {
+            0.0
+        } else {
+            let mut sorted = window_fts.clone();
+            sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let len = sorted.len();
+            if len % 2 == 0 {
+                (sorted[len / 2 - 1] + sorted[len / 2]) / 2.0
+            } else {
+                sorted[len / 2]
+            }
+        };
 
         // --- F2: Flight Time 分散 ---
         let f2 = if window_fts.len() > 1 {

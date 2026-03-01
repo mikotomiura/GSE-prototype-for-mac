@@ -2,9 +2,9 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crossbeam_channel::{bounded, Sender};
+use crossbeam_channel::{bounded, RecvTimeoutError, Receiver, Sender};
 
 /// ログエントリの種別
 #[derive(Debug)]
@@ -48,10 +48,12 @@ pub struct SessionLogger {
 }
 
 impl SessionLogger {
-    /// ロガーを開始し、ログエントリ送信用の `Sender` を返す。
+    /// ロガーを開始し、ログエントリ送信用の `Sender` とシャットダウン完了通知の `Receiver` を返す。
     /// `Sender` を Clone して複数スレッドから送信可能。
-    pub fn start(log_path: PathBuf) -> (Self, Sender<LogEntry>) {
+    /// `Receiver` は `LogEntry::End` 処理完了後に通知される。
+    pub fn start(log_path: PathBuf) -> (Self, Sender<LogEntry>, Receiver<()>) {
         let (tx, rx) = bounded::<LogEntry>(512);
+        let (shutdown_tx, shutdown_rx) = bounded::<()>(1);
         let path_clone = log_path.clone();
 
         let handle = thread::spawn(move || {
@@ -80,58 +82,73 @@ impl SessionLogger {
 
             tracing::info!("SessionLogger: writing to {:?}", path_clone);
 
-            while let Ok(entry) = rx.recv() {
-                match entry {
-                    LogEntry::Key {
-                        vk_code,
-                        timestamp,
-                        is_press,
-                    } => {
-                        let _ = writeln!(
-                            writer,
-                            r#"{{"type":"key","t":{},"vk":{},"press":{}}}"#,
-                            timestamp,
-                            vk_code,
-                            is_press,
-                        );
-                    }
-                    LogEntry::Feat {
-                        timestamp,
-                        f1,
-                        f2,
-                        f3,
-                        f4,
-                        f5,
-                        f6,
-                        p_flow,
-                        p_inc,
-                        p_stuck,
-                    } => {
-                        let _ = writeln!(
-                            writer,
-                            r#"{{"type":"feat","t":{},"f1":{:.2},"f2":{:.2},"f3":{:.4},"f4":{:.2},"f5":{:.1},"f6":{:.4},"p_flow":{:.4},"p_inc":{:.4},"p_stuck":{:.4}}}"#,
-                            timestamp, f1, f2, f3, f4, f5, f6, p_flow, p_inc, p_stuck,
-                        );
-                    }
-                    LogEntry::ImeState { timestamp, on } => {
-                        let _ = writeln!(
-                            writer,
-                            r#"{{"type":"ime_state","t":{},"on":{}}}"#,
-                            timestamp, on,
-                        );
-                    }
-                    LogEntry::End => {
-                        let _ = writeln!(
-                            writer,
-                            r#"{{"type":"meta","session_end":{}}}"#,
-                            now_ms()
-                        );
-                        break;
-                    }
-                }
+            // イベントループ: recv_timeout で定期フラッシュ。
+            // アクティブ打鍵時は BufWriter がバッファリングし、
+            // 5秒間イベントがなければ自動フラッシュする。
+            loop {
+                match rx.recv_timeout(Duration::from_secs(5)) {
+                    Ok(entry) => {
+                        let is_end = matches!(entry, LogEntry::End);
+                        match entry {
+                            LogEntry::Key {
+                                vk_code,
+                                timestamp,
+                                is_press,
+                            } => {
+                                let _ = writeln!(
+                                    writer,
+                                    r#"{{"type":"key","t":{},"vk":{},"press":{}}}"#,
+                                    timestamp,
+                                    vk_code,
+                                    is_press,
+                                );
+                            }
+                            LogEntry::Feat {
+                                timestamp,
+                                f1,
+                                f2,
+                                f3,
+                                f4,
+                                f5,
+                                f6,
+                                p_flow,
+                                p_inc,
+                                p_stuck,
+                            } => {
+                                let _ = writeln!(
+                                    writer,
+                                    r#"{{"type":"feat","t":{},"f1":{:.2},"f2":{:.2},"f3":{:.4},"f4":{:.2},"f5":{:.1},"f6":{:.4},"p_flow":{:.4},"p_inc":{:.4},"p_stuck":{:.4}}}"#,
+                                    timestamp, f1, f2, f3, f4, f5, f6, p_flow, p_inc, p_stuck,
+                                );
+                            }
+                            LogEntry::ImeState { timestamp, on } => {
+                                let _ = writeln!(
+                                    writer,
+                                    r#"{{"type":"ime_state","t":{},"on":{}}}"#,
+                                    timestamp, on,
+                                );
+                            }
+                            LogEntry::End => {
+                                let _ = writeln!(
+                                    writer,
+                                    r#"{{"type":"meta","session_end":{}}}"#,
+                                    now_ms()
+                                );
+                            }
+                        }
 
-                // バッファを定期フラッシュ (エラー握りつぶし)
-                let _ = writer.flush();
+                        if is_end {
+                            let _ = writer.flush();
+                            let _ = shutdown_tx.send(());
+                            break;
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        // アイドル期間: バッファをディスクに書き出す
+                        let _ = writer.flush();
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
             }
 
             let _ = writer.flush();
@@ -143,7 +160,7 @@ impl SessionLogger {
             _handle: handle,
         };
 
-        (logger, tx)
+        (logger, tx, shutdown_rx)
     }
 }
 
