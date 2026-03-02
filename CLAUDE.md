@@ -36,7 +36,7 @@ Main Thread (Tauri event loop + GCD main queue for TIS)
 │       │ crossbeam::channel (bounded 64, non-blocking send)
 │       │ bounded(1) wake channel → IME Polling Thread
 ├─ Analysis Thread     ← recv_timeout(1s) → 1Hz timer gate; HMM update ≤ 1×/sec
-├─ IME Monitor Thread  ← polls is_candidate_window_open() every 100ms (CGWindowList)
+├─ IME Monitor Thread  ← reads IME_ACTIVE every 100ms (set by Hook Thread state machine)
 ├─ IME Polling Thread  ← recv_timeout(100ms) wake; TIS dispatch_sync_f to main queue
 ├─ Logger Thread       ← bounded channel(512) → NDJSON file (BufWriter)
 └─ Sensor Thread       ← stub (accelerometer not implemented on macOS)
@@ -49,9 +49,9 @@ All inter-thread communication uses `crossbeam` bounded channels. Shared state u
 - **`lib.rs`** — Tauri setup, thread orchestration, 6 IPC commands (`get_cognitive_state`, `get_hook_status`, `start_wall_server`, `stop_wall_server`, `get_session_file`, `quit_app`)
 - **`analysis/engine.rs`** — HMM engine: 3 states × 26 observation bins (25 natural + 1 backspace penalty), dual semantic latent axes (Friction, Engagement), EWMA smoothing (α=0.3), hysteresis display layer (α=0.25/0.50)
 - **`analysis/features.rs`** — F1-F6 feature extraction over 30-second sliding window, `phi(x, beta)` normalization (κ=2.0), `make_silence_observation()` for idle periods
-- **`input/hook.rs`** — Shared atomics (`IME_OPEN`, `IME_ACTIVE`, `HOOK_ACTIVE`, `EVENT_SENDER`). Uses `#[path = "hook_macos.rs"]` for platform dispatch
-- **`input/hook_macos.rs`** — CGEventTap implementation, macOS VK→Windows VK mapping (~60 codes), Input Monitoring permission flow
-- **`input/ime.rs`** — IME candidate window detection via `CGWindowListCopyWindowInfo` + `spawn_ime_open_polling_thread()` with JIS key vs ANSI keyboard detection paths
+- **`input/hook.rs`** — Shared atomics (`IME_OPEN`, `IME_ACTIVE`, `IME_COMPOSING`, `HOOK_ACTIVE`, `EVENT_SENDER`). Uses `#[path = "hook_macos.rs"]` for platform dispatch
+- **`input/hook_macos.rs`** — CGEventTap implementation, macOS VK→Windows VK mapping (~60 codes), Input Monitoring permission flow, **IME composition state machine** (tracks COMPOSING→CANDIDATING transitions via keystroke patterns)
+- **`input/ime.rs`** — `ImeMonitor` reads `IME_ACTIVE` from hook state machine + `spawn_ime_open_polling_thread()` with JIS key vs ANSI keyboard detection paths
 - **`input/ime_macos.rs`** — TIS Carbon FFI via `dispatch_sync_f` to main GCD queue
 - **`logger.rs`** — NDJSON session logger to `~/Documents/GSE-sessions/`, auto-flush on 5s idle
 - **`wall_server.rs`** — Embedded HTTP server (tiny_http) + QR code for smartphone-based Wall unlock with DeviceMotion shake detection
@@ -92,7 +92,7 @@ Scopes: `wall`, `macos/ime`, `overlay`, `features`, `build`, `ui`, `sensors`
 
 ## macOS Limitations (vs planned Windows)
 
-- `IME_ACTIVE` (candidate window detection) implemented via `CGWindowListCopyWindowInfo`; detects JapaneseIM / GoogleJapaneseInput overlay windows. Other IME products (ATOK etc.) may need process names added to `IME_PROCESS_NAMES` in `ime.rs`
+- `IME_ACTIVE` (candidate window detection) uses keystroke state machine in CGEventTap callback — detects Space during composition as candidate trigger, Enter/Escape as reset. No extra permissions needed. Heuristic: may briefly misdetect if user presses Space for non-conversion purposes while IME_OPEN
 - Accelerometer stubbed → Wall requires QR/smartphone unlock or 60s timeout
 - First run requires Input Monitoring permission grant + app restart
 - No Windows source files exist yet (`windows_impl.rs`, `windows_ime.rs`, `sensors_windows.rs` are planned)

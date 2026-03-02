@@ -16,11 +16,18 @@ pub const VK_DBE_SBCSCHAR: u32 = 0xF3; // 半角: Single-byte character mode
 pub const VK_DBE_DBCSCHAR: u32 = 0xF4; // 全角: Double-byte character mode
 pub const VK_KANJI: u32 = 0x19; // 半角/全角: Half-width / full-width toggle
 
-/// Cross-process IME candidate window state.
-/// macOS: Set by IME Monitor thread via CGWindowListCopyWindowInfo — detects
-/// JapaneseIM / GoogleJapaneseInput candidate overlay windows at layer > 0.
+/// IME candidate window state: true when the candidate/conversion window is
+/// showing and the user is navigating candidates (Space/arrow keys).
+///
+/// macOS: Set by CGEventTap callback via keystroke state machine — detects
+/// the transition from inline composition to candidate selection.
 /// When true, the analysis thread pauses HMM updates and forces Flow state.
 pub static IME_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// IME inline composition state: true when the user is actively typing
+/// romaji that the IME is converting to kana (marked/underlined text).
+/// Set to true on letter keyDown when IME_OPEN=true; reset on Enter/Escape.
+pub static IME_COMPOSING: AtomicBool = AtomicBool::new(false);
 
 /// Returns true if an IME is currently composing text in the foreground application.
 pub fn is_ime_active() -> bool {
