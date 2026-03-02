@@ -147,6 +147,9 @@ fn dispatch_request<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) {
     let url = request.url().to_string();
+    let method = request.method().to_string();
+    let remote = request.remote_addr().map(|a| a.to_string()).unwrap_or_default();
+    tracing::info!("WallServer: {} {} from {}", method, url, remote);
 
     // GET /shake?token=xxx — serve the Zen Timer HTML page
     if url.starts_with("/shake") && extract_token(&url) == token {

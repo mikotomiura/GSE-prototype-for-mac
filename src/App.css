@@ -325,6 +325,16 @@ body {
   margin-bottom: 0 !important;
 }
 
+.qr-url {
+  font-size: 0.7rem !important;
+  opacity: 0.4 !important;
+  margin-top: 0.5rem !important;
+  margin-bottom: 0 !important;
+  word-break: break-all;
+  font-family: monospace;
+  max-width: 300px;
+}
+
 .qr-loading {
   font-size: 1.1rem;
   opacity: 0.5;
@@ -334,6 +344,14 @@ body {
 @keyframes pulse {
   0%, 100% { opacity: 0.5; }
   50% { opacity: 1; }
+}
+
+/* Network hint */
+.wall-network-hint {
+  font-size: 0.8rem !important;
+  opacity: 0.5 !important;
+  margin-top: 0.5rem !important;
+  margin-bottom: 0.5rem !important;
 }
 
 /* Phone connected badge */

@@ -20,6 +20,7 @@ const TYPING_WARN_THRESHOLD_MS = 3000;
 const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive, keyboardIdleMs }) => {
     const [nudgeOpacity, setNudgeOpacity] = useState(0);
     const [qrSvg, setQrSvg] = useState<string | null>(null);
+    const [serverUrl, setServerUrl] = useState<string | null>(null);
     const [phoneConnected, setPhoneConnected] = useState(false);
     const currentWindow = useMemo(() => getCurrentWindow(), []);
 
@@ -51,6 +52,7 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive, keyboardIdle
             // Wall 解除時: サーバー停止 + 状態リセット
             invoke("stop_wall_server").catch(console.error);
             setQrSvg(null);
+            setServerUrl(null);
             setPhoneConnected(false);
             return;
         }
@@ -59,6 +61,7 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive, keyboardIdle
         invoke<WallServerInfo>("start_wall_server")
             .then((info) => {
                 setQrSvg(info.qr_svg);
+                setServerUrl(info.url);
             })
             .catch((err) => {
                 console.error("Failed to start wall server:", err);
@@ -99,10 +102,17 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive, keyboardIdle
                             <p className="qr-hint">
                                 Open camera app and point at QR code
                             </p>
+                            {serverUrl && (
+                                <p className="qr-url">{serverUrl}</p>
+                            )}
                         </div>
                     ) : (
                         <p className="qr-loading">Starting unlock server...</p>
                     )}
+
+                    <p className="wall-network-hint">
+                        PCとスマホが同じWi-Fiに接続されていることを確認してください
+                    </p>
 
                     {phoneConnected && (
                         <div className="phone-connected-badge">

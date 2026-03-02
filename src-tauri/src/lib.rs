@@ -424,6 +424,16 @@ pub fn run() {
     // Wall unlock サーバー状態
     let wall_state: WallServerState = Arc::new(Mutex::new(None));
 
+    // macOS ファイアウォールのダイアログをオーバーレイ表示前にトリガーするため、
+    // 起動時にダミーの TCP リスナーをバインド → ローカル接続 → 即クローズ
+    std::thread::spawn(|| {
+        if let Ok(listener) = std::net::TcpListener::bind("0.0.0.0:0") {
+            if let Ok(addr) = listener.local_addr() {
+                let _ = std::net::TcpStream::connect(addr);
+            }
+        }
+    });
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
