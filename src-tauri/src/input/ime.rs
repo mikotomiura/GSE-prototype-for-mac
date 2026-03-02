@@ -1,6 +1,9 @@
+use std::ffi::c_void;
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use core_foundation::base::{CFRelease, TCFType};
+use core_foundation::string::CFString;
 use crossbeam_channel::Sender;
 
 use crate::logger::LogEntry;
@@ -13,23 +16,140 @@ use crate::logger::LogEntry;
 pub mod ime_macos;
 
 // ---------------------------------------------------------------------------
+// CGWindowList FFI — candidate window detection via window enumeration.
+//
+// Strategy: enumerate on-screen windows via CGWindowListCopyWindowInfo and
+// check if any belong to a known Japanese IME process at a non-zero window
+// layer (candidate / overlay windows).
+//
+// Permission: kCGWindowOwnerName does NOT require Screen Recording.
+// Only kCGWindowName (window title) is gated, and we do not read it.
+//
+// Thread safety: CGWindowListCopyWindowInfo is safe to call from any thread.
+// ---------------------------------------------------------------------------
+
+/// CGWindowListOption: only on-screen windows.
+const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1 << 0;
+/// Null window ID — enumerate all windows.
+const K_CG_NULL_WINDOW_ID: u32 = 0;
+/// kCFNumberSInt32Type
+const K_CF_NUMBER_SINT32_TYPE: u32 = 3;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGWindowListCopyWindowInfo(option: u32, relativeToWindow: u32) -> *const c_void;
+
+    /// Window owner process name (CFStringRef). NOT gated by Screen Recording.
+    #[allow(non_upper_case_globals)]
+    static kCGWindowOwnerName: *const c_void;
+    /// Window layer number (CFNumberRef, i32). Layer 0 = normal app window.
+    #[allow(non_upper_case_globals)]
+    static kCGWindowLayer: *const c_void;
+}
+
+// CoreFoundation collection/number FFI (linked transitively via CoreGraphics)
+extern "C" {
+    fn CFArrayGetCount(theArray: *const c_void) -> isize;
+    fn CFArrayGetValueAtIndex(theArray: *const c_void, idx: isize) -> *const c_void;
+    fn CFDictionaryGetValue(theDict: *const c_void, key: *const c_void) -> *const c_void;
+    fn CFNumberGetValue(number: *const c_void, theType: u32, valuePtr: *mut c_void) -> bool;
+}
+
+/// Known Japanese IME process names whose candidate (overlay) windows
+/// indicate active composition.
+const IME_PROCESS_NAMES: &[&str] = &[
+    "JapaneseIM",          // Apple built-in Japanese IME
+    "GoogleJapaneseInput", // Google Japanese Input
+];
+
+// ---------------------------------------------------------------------------
 // ImeMonitor — cross-process IME composition (candidate window) detection
 // ---------------------------------------------------------------------------
 
-/// Monitors whether an IME candidate window is currently open.
+/// Monitors whether an IME candidate window is currently visible.
 ///
-/// macOS: stub returning false (IME_ACTIVE composition detection not implemented).
-///        HMM continues running during candidate selection — known limitation.
-pub struct ImeMonitor {}
+/// macOS: enumerates on-screen windows via `CGWindowListCopyWindowInfo` and
+/// checks if any belong to a known Japanese IME process at a non-zero window
+/// layer. When detected, the HMM engine is paused to avoid contaminating
+/// keystroke features with candidate-navigation keystrokes.
+pub struct ImeMonitor;
 
 impl ImeMonitor {
     pub fn new() -> Self {
-        Self {}
+        Self
     }
 
+    /// Returns `true` if a Japanese IME candidate window is currently on screen.
+    ///
+    /// Performs an early exit if `IME_OPEN` is false (user is in alphanumeric
+    /// mode — no candidate window possible), making the common case zero-cost.
     pub fn is_candidate_window_open(&self) -> bool {
-        false
+        // Fast path: if user is not in Japanese input mode, skip enumeration.
+        if !crate::input::hook::IME_OPEN.load(Ordering::Relaxed) {
+            return false;
+        }
+        unsafe { check_candidate_window() }
     }
+}
+
+/// Enumerate on-screen windows and check for an IME candidate overlay.
+///
+/// # Safety
+/// Calls CoreGraphics FFI functions. Safe to call from any thread.
+unsafe fn check_candidate_window() -> bool {
+    let window_list = CGWindowListCopyWindowInfo(
+        K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY,
+        K_CG_NULL_WINDOW_ID,
+    );
+    if window_list.is_null() {
+        return false;
+    }
+
+    let count = CFArrayGetCount(window_list);
+    let mut found = false;
+
+    for i in 0..count {
+        let dict = CFArrayGetValueAtIndex(window_list, i);
+        if dict.is_null() {
+            continue;
+        }
+
+        // ── Check window layer ──────────────────────────────────────────
+        // Normal application windows are at layer 0.
+        // IME candidate windows appear at layer > 0.
+        let layer_ptr = CFDictionaryGetValue(dict, kCGWindowLayer);
+        if layer_ptr.is_null() {
+            continue;
+        }
+        let mut layer: i32 = 0;
+        let ok = CFNumberGetValue(
+            layer_ptr,
+            K_CF_NUMBER_SINT32_TYPE,
+            &mut layer as *mut i32 as *mut c_void,
+        );
+        if !ok || layer <= 0 {
+            continue;
+        }
+
+        // ── Check window owner name ─────────────────────────────────────
+        let owner_ptr = CFDictionaryGetValue(dict, kCGWindowOwnerName);
+        if owner_ptr.is_null() {
+            continue;
+        }
+        // wrap_under_get_rule: dictionary owns the string; we must not release it.
+        let owner_cf =
+            CFString::wrap_under_get_rule(owner_ptr as core_foundation::string::CFStringRef);
+        let owner_str = owner_cf.to_string();
+
+        if IME_PROCESS_NAMES.iter().any(|&name| owner_str == name) {
+            found = true;
+            break;
+        }
+    }
+
+    // Release the array returned by CGWindowListCopyWindowInfo (Copy rule).
+    CFRelease(window_list);
+    found
 }
 
 // ---------------------------------------------------------------------------

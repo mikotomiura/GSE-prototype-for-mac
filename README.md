@@ -102,7 +102,7 @@ Main Thread (Tauri event loop + GCD main queue for TIS)
     ├─ Analysis Thread     ← recv_timeout(1 s) → 1 Hz timer gate; HMM update ≤ 1×/sec
     │       │ Arc<Mutex<CognitiveStateEngine>> (Tauri managed state)
     │       │ Synthetic Friction: silence ≥ 20 s → ramps F6/F3 toward Stuck
-    ├─ IME Monitor Thread  ← polls is_candidate_window_open() every 100 ms (stub: always false)
+    ├─ IME Monitor Thread  ← polls is_candidate_window_open() every 100 ms (CGWindowList)
     ├─ IME Polling Thread  ← recv_timeout(100 ms) wake; TIS dispatch_sync_f to main queue
     │
     ├─ Logger Thread       ← bounded channel(512) → NDJSON file (BufWriter)
@@ -286,7 +286,7 @@ Japanese IME input introduces two distinct challenges for keystroke analysis:
 
 ### Candidate Window Suppression
 
-On macOS, `ImeMonitor::is_candidate_window_open()` returns `false` (stub). The HMM continues running during candidate selection — this is a known limitation.
+On macOS, `ImeMonitor::is_candidate_window_open()` uses `CGWindowListCopyWindowInfo` to detect IME candidate overlay windows. It enumerates on-screen windows and checks if any belong to a known Japanese IME process (`JapaneseIM`, `GoogleJapaneseInput`) at a non-zero window layer. When a candidate window is detected, the HMM engine is paused and forced to Flow state. No additional permissions are required beyond Input Monitoring (`kCGWindowOwnerName` is not gated by Screen Recording).
 
 ### IME Mode Detection (macOS)
 
@@ -338,7 +338,7 @@ IME Polling Thread
 |---|---|---|---|
 | `IME_OPEN` | hook (JIS keys), polling thread | analysis thread | Current IME mode |
 | `IME_STATE_DIRTY` | hook (JIS keys) | polling thread (drain) | Housekeeping |
-| `IME_ACTIVE` | — | ImeMonitor (stub) | Always false on macOS |
+| `IME_ACTIVE` | IME Monitor thread | `get_paused()` callers | Candidate window visible (CGWindowList) |
 | `HOOK_ACTIVE` | `hook_macos::start()` | `get_hook_status` command | Permission banner trigger |
 
 ### `Option<bool>` Initial State
@@ -462,7 +462,7 @@ npm run tauri build
 
 | Feature | Status | Impact |
 |---|---|---|
-| IME composition detection (`IME_ACTIVE`) | `false` (stub) | HMM runs during candidate window |
+| IME candidate window detection (`IME_ACTIVE`) | Detected (CGWindowList) | HMM pauses during candidate selection |
 | Accelerometer unlock | Not implemented | Wall requires manual click-through toggle |
 | JIS IME keys (ANSI keyboard) | Detected via TIS polling only (100ms) | Negligible latency difference |
 | First-run Input Monitoring permission | Requires restart after granting | One-time setup |

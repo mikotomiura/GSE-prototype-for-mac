@@ -367,11 +367,25 @@ pub fn run() {
     });
 
     // IME モニタースレッド
+    // CGWindowListCopyWindowInfo で日本語IMEの候補ウィンドウを100msポーリング検出。
+    // 候補ウィンドウ表示中はHMMを一時停止し、ナビゲーションキー操作が特徴量を汚染するのを防ぐ。
     thread::spawn(move || {
         tracing::info!("IME Monitor thread started");
         let monitor = input::ime::ImeMonitor::new();
+        let mut last_active = false;
+
         loop {
             let active = monitor.is_candidate_window_open();
+
+            if active != last_active {
+                tracing::debug!(
+                    "IME candidate window: {}",
+                    if active { "OPEN (pausing HMM)" } else { "CLOSED (resuming HMM)" }
+                );
+                last_active = active;
+            }
+
+            input::hook::IME_ACTIVE.store(active, Ordering::Release);
             engine_for_monitor.set_paused(active);
             if active {
                 engine_for_monitor.force_flow_state();

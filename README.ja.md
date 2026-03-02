@@ -103,7 +103,7 @@
     ├─ 分析スレッド            ← recv_timeout(1 s) → 1 Hz タイマーゲート; HMM 更新 ≤ 1回/秒
     │       │ Arc<Mutex<CognitiveStateEngine>> (Tauri managed state)
     │       │ 合成摩擦: 沈黙 ≥ 20 s → F6/F3 を Stuck 方向へ漸増
-    ├─ IME モニタースレッド    ← is_candidate_window_open() 100ms ポーリング（スタブ：常に false）
+    ├─ IME モニタースレッド    ← is_candidate_window_open() 100ms ポーリング（CGWindowList）
     ├─ IME ポーリングスレッド  ← recv_timeout(100ms) ウェイク; TIS を dispatch_sync_f でメインキューへ
     │
     ├─ ロガースレッド          ← bounded channel(512) → NDJSON ファイル (BufWriter)
@@ -287,7 +287,7 @@ F3_synthetic = clamp((silence_secs − 30) / 100, 0.0, 0.40)
 
 ### 候補ウィンドウ検出
 
-macOS では `ImeMonitor::is_candidate_window_open()` は `false` を返すスタブです。候補選択中も HMM は動作し続けます（既知の制限）。
+macOS では `ImeMonitor::is_candidate_window_open()` は `CGWindowListCopyWindowInfo` を使い、画面上のウィンドウを列挙して日本語 IME プロセス（`JapaneseIM`、`GoogleJapaneseInput`）が所有する非レイヤー0 ウィンドウ（候補オーバーレイ）を検出します。候補ウィンドウ検出時は HMM エンジンを一時停止し、Flow 状態を強制します。Input Monitoring 以外の追加パーミッションは不要です（`kCGWindowOwnerName` は Screen Recording で制限されません）。
 
 ### IME モード検出（macOS）
 
@@ -339,7 +339,7 @@ IME ポーリングスレッド
 | --- | --- | --- | --- |
 | `IME_OPEN` | フック（JIS キー）、ポーリングスレッド | 分析スレッド | 現在の IME モード |
 | `IME_STATE_DIRTY` | フック（JIS キー） | ポーリングスレッド（ドレイン） | ハウスキーピング |
-| `IME_ACTIVE` | — | ImeMonitor（スタブ） | macOS では常に false |
+| `IME_ACTIVE` | IME モニタースレッド | `get_paused()` 呼び出し元 | 候補ウィンドウ表示中（CGWindowList） |
 | `HOOK_ACTIVE` | `hook_macos::start()` | `get_hook_status` コマンド | 権限バナー表示トリガー |
 
 ### `Option<bool>` 初期状態
@@ -462,7 +462,7 @@ npm run tauri build
 
 | 機能 | 状態 | 影響 |
 | --- | --- | --- |
-| IME コンポジション検出（`IME_ACTIVE`） | false 固定（スタブ） | 候補ウィンドウ中も HMM が動作 |
+| IME 候補ウィンドウ検出（`IME_ACTIVE`） | 検出済み（CGWindowList） | 候補選択中は HMM を一時停止 |
 | 加速度センサー Wall 解除 | 未実装 | Wall は手動解除が必要 |
 | JIS IME キー（ANSI キーボード） | TIS ポーリング（100ms）のみ | レイテンシの差は体感上無視可能 |
 | 初回 Input Monitoring 権限 | 付与後にアプリ再起動が必要 | 初回セットアップのみ |

@@ -16,8 +16,10 @@ pub const VK_DBE_SBCSCHAR: u32 = 0xF3; // 半角: Single-byte character mode
 pub const VK_DBE_DBCSCHAR: u32 = 0xF4; // 全角: Double-byte character mode
 pub const VK_KANJI: u32 = 0x19; // 半角/全角: Half-width / full-width toggle
 
-/// Cross-process IME composition state (romaji→hiragana conversion in progress).
-/// macOS: Always false (composition detection not implemented; known limitation).
+/// Cross-process IME candidate window state.
+/// macOS: Set by IME Monitor thread via CGWindowListCopyWindowInfo — detects
+/// JapaneseIM / GoogleJapaneseInput candidate overlay windows at layer > 0.
+/// When true, the analysis thread pauses HMM updates and forces Flow state.
 pub static IME_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Returns true if an IME is currently composing text in the foreground application.
