@@ -212,15 +212,13 @@ fn handle_event(event_type: CGEventType, event: &CGEvent) {
         }
     }
 
-    // Send keystroke event to analysis thread (non-blocking)
-    if let Ok(guard) = EVENT_SENDER.try_lock() {
-        if let Some(sender) = guard.as_ref() {
-            let _ = sender.try_send(InputEvent {
-                vk_code,
-                timestamp,
-                is_press,
-            });
-        }
+    // Send keystroke event to analysis thread (lock-free, non-blocking)
+    if let Some(sender) = EVENT_SENDER.get() {
+        let _ = sender.try_send(InputEvent {
+            vk_code,
+            timestamp,
+            is_press,
+        });
     }
 
     // Wake the IME polling thread on every keypress
@@ -234,10 +232,8 @@ fn handle_event(event_type: CGEventType, event: &CGEvent) {
             | VK_KANJI
     );
     if is_press || (is_release && is_ime_mode_key) {
-        if let Ok(guard) = POLL_WAKE_TX.try_lock() {
-            if let Some(tx) = guard.as_ref() {
-                let _ = tx.try_send(());
-            }
+        if let Some(tx) = POLL_WAKE_TX.get() {
+            let _ = tx.try_send(());
         }
     }
 }

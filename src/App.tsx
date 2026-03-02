@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -55,16 +55,32 @@ function App() {
   // 3. Intervention Layer ロジック
   //    D-2: Lv1 (Nudge) は Overlay.tsx 側で stuck>0.6 時に即時表示済み
   //    D-3: Lv2 (Ambient Fade/Wall) は stuck>LV2_STUCK_THRESHOLD が LV2_TIMER_MS 継続で発動
+  const wallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout>;
     if (cognitiveState.stuck > LV2_STUCK_THRESHOLD && !isWallActive) {
-      // Stuck状態が閾値を超えたまま 30秒継続したら Wall (Lv2) を発動
-      timer = setTimeout(() => {
-        setIsWallActive(true);
-      }, LV2_TIMER_MS);
+      // タイマーが未設定の場合のみ新規作成（再レンダーでリセットしない）
+      if (!wallTimerRef.current) {
+        wallTimerRef.current = setTimeout(() => {
+          wallTimerRef.current = null;
+          setIsWallActive(true);
+        }, LV2_TIMER_MS);
+      }
+    } else {
+      // Stuck閾値を下回った or Wall発動済み → タイマーをクリア
+      if (wallTimerRef.current) {
+        clearTimeout(wallTimerRef.current);
+        wallTimerRef.current = null;
+      }
     }
-    return () => clearTimeout(timer);
   }, [cognitiveState.stuck, isWallActive]);
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (wallTimerRef.current) {
+        clearTimeout(wallTimerRef.current);
+      }
+    };
+  }, []);
 
   // 4. Sensor Integration (Unlock Logic)
   useEffect(() => {

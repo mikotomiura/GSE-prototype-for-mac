@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use crossbeam_channel::Sender;
 
@@ -61,16 +61,15 @@ pub static IME_STATE_DIRTY: AtomicBool = AtomicBool::new(false);
 /// (managed by the hook callback) as the single source of truth.
 pub static JIS_KEYBOARD_SEEN: AtomicBool = AtomicBool::new(false);
 
-pub static EVENT_SENDER: Mutex<Option<Sender<InputEvent>>> = Mutex::new(None);
+pub static EVENT_SENDER: OnceLock<Sender<InputEvent>> = OnceLock::new();
 /// Wake channel for the IME open polling thread.
 /// Signalled on every keypress so the polling thread updates within ~5ms.
-pub static POLL_WAKE_TX: Mutex<Option<Sender<()>>> = Mutex::new(None);
+pub static POLL_WAKE_TX: OnceLock<Sender<()>> = OnceLock::new();
 
 /// Store the polling thread's wake channel sender.
 /// Must be called before `init_hook` so the sender is ready when the hook fires.
 pub fn set_poll_wake_sender(tx: Sender<()>) {
-    let mut s = POLL_WAKE_TX.lock().unwrap();
-    *s = Some(tx);
+    let _ = POLL_WAKE_TX.set(tx);
 }
 
 // ---------------------------------------------------------------------------
@@ -83,11 +82,8 @@ pub mod hook_macos;
 /// Install the CGEventTap and begin delivering InputEvents to `sender`.
 /// Spawns a dedicated background thread with its own CFRunLoop; returns immediately.
 pub fn init_hook(sender: Sender<InputEvent>) {
-    // Store sender in global state for use in hook callback.
-    {
-        let mut s = EVENT_SENDER.lock().unwrap();
-        *s = Some(sender);
-    }
+    // Store sender in global state for use in hook callback (lock-free).
+    let _ = EVENT_SENDER.set(sender);
 
     hook_macos::start();
 }
