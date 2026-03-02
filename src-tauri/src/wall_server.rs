@@ -7,9 +7,9 @@
 // Flow:
 //   1. Overlay calls `start_wall_server` → server starts, returns QR SVG
 //   2. User scans QR → phone opens Zen Timer page → server emits `wall-phone-connected`
-//   3. After 120 s countdown (or early exit), phone POSTs /unlock?token=xxx
+//   3. After 120 s countdown, phone POSTs /unlock?token=xxx
 //   4. Server emits `sensor-accelerometer` / `"move"` → Wall dismissed
-//   5. 120-second auto-unlock fallback if phone unavailable (synced with phone timer)
+//   (No PC-side auto-unlock — smartphone unlock only)
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
@@ -17,7 +17,7 @@ use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use qrcode::QrCode;
 use tauri::{Emitter, Runtime};
@@ -109,9 +109,6 @@ fn server_loop<R: Runtime>(
     shutdown: Arc<AtomicBool>,
     app: tauri::AppHandle<R>,
 ) {
-    let start = Instant::now();
-    let fallback_timeout = Duration::from_secs(120);
-
     // Build the server URL for embedding in the HTML page
     let port = server
         .server_addr()
@@ -121,14 +118,8 @@ fn server_loop<R: Runtime>(
     let local_ip = detect_local_ip();
     let server_url = format!("http://{}:{}", local_ip, port);
 
+    // PC側の自動アンロックなし — スマホからの POST /unlock のみで解除
     loop {
-        // 60-second auto-unlock fallback
-        if start.elapsed() > fallback_timeout {
-            tracing::info!("WallServer: 120s timeout — auto-unlocking wall");
-            let _ = app.emit("sensor-accelerometer", "move");
-            break;
-        }
-
         if shutdown.load(Ordering::Acquire) {
             break;
         }
