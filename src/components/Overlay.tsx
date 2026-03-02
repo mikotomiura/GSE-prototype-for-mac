@@ -1,14 +1,12 @@
-import React, { useEffect, useState, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-// PC・スマホ共通: Zen Timer 120秒
-const WALL_COUNTDOWN_SECONDS = 120;
-
 interface OverlayProps {
     stuckProb: number;
     isWallActive: boolean;
+    keyboardIdleMs: number;
 }
 
 interface WallServerInfo {
@@ -16,13 +14,14 @@ interface WallServerInfo {
     url: string;
 }
 
-const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
+// 打鍵検知の閾値: Wall中にこの時間(ms)以内にキー入力があれば警告表示
+const TYPING_WARN_THRESHOLD_MS = 3000;
+
+const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive, keyboardIdleMs }) => {
     const [nudgeOpacity, setNudgeOpacity] = useState(0);
     const [qrSvg, setQrSvg] = useState<string | null>(null);
-    const [wallTimer, setWallTimer] = useState(WALL_COUNTDOWN_SECONDS);
     const [phoneConnected, setPhoneConnected] = useState(false);
     const currentWindow = useMemo(() => getCurrentWindow(), []);
-    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     // 透過背景 + 即座にクリック透過を設定（マウント直後）
     useEffect(() => {
@@ -52,12 +51,7 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
             // Wall 解除時: サーバー停止 + 状態リセット
             invoke("stop_wall_server").catch(console.error);
             setQrSvg(null);
-            setWallTimer(WALL_COUNTDOWN_SECONDS);
             setPhoneConnected(false);
-            if (timerRef.current) {
-                clearInterval(timerRef.current);
-                timerRef.current = null;
-            }
             return;
         }
 
@@ -69,25 +63,6 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
             .catch((err) => {
                 console.error("Failed to start wall server:", err);
             });
-
-        // 120秒カウントダウン（スマホ Zen Timer と同期）
-        setWallTimer(WALL_COUNTDOWN_SECONDS);
-        timerRef.current = setInterval(() => {
-            setWallTimer((prev) => {
-                if (prev <= 1) {
-                    if (timerRef.current) clearInterval(timerRef.current);
-                    return 0;
-                }
-                return prev - 1;
-            });
-        }, 1000);
-
-        return () => {
-            if (timerRef.current) {
-                clearInterval(timerRef.current);
-                timerRef.current = null;
-            }
-        };
     }, [isWallActive]);
 
     useEffect(() => {
@@ -101,11 +76,8 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
         }
     }, [stuckProb, isWallActive]);
 
-    const formatTimer = (secs: number) => {
-        const m = Math.floor(secs / 60);
-        const s = secs % 60;
-        return `${m}:${s < 10 ? '0' : ''}${s}`;
-    };
+    // Wall中の打鍵検知: keyboardIdleMs > 0 かつ閾値以内なら警告
+    const showTypingWarning = isWallActive && keyboardIdleMs > 0 && keyboardIdleMs < TYPING_WARN_THRESHOLD_MS;
 
     return (
         <div className="overlay-root">
@@ -138,9 +110,11 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
                         </div>
                     )}
 
-                    <div className="wall-timer">
-                        {formatTimer(wallTimer)}
-                    </div>
+                    {showTypingWarning && (
+                        <div className="wall-typing-warning">
+                            PCから離れてください — Step away from your PC
+                        </div>
+                    )}
                 </div>
             )}
         </div>

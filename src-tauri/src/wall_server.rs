@@ -295,9 +295,6 @@ h1{font-size:1.5rem;margin-bottom:1rem;font-weight:600}
 .btn{padding:1rem 2.5rem;font-size:1.1rem;background:#4ade80;color:#0f172a;border:none;border-radius:12px;cursor:pointer;font-weight:700;transition:transform 0.1s;}
 .btn:active{transform:scale(0.95)}
 .btn.hidden{display:none}
-.btn-skip{padding:0.6rem 1.5rem;font-size:0.85rem;background:transparent;color:rgba(255,255,255,0.45);border:1px solid rgba(255,255,255,0.2);border-radius:8px;cursor:pointer;margin-top:1.5rem;transition:opacity 0.2s;}
-.btn-skip:active{opacity:0.7}
-.btn-skip.hidden{display:none}
 .status{font-size:1.1rem;color:#4ade80;font-weight:600;display:none}
 </style>
 </head>
@@ -306,7 +303,6 @@ h1{font-size:1.5rem;margin-bottom:1rem;font-weight:600}
 <p class="sub" id="msg">PCから離れて深呼吸してください。<br>2分後にロック解除ボタンが現れます。</p>
 <div class="timer-circle" id="circle"><span id="time">02:00</span></div>
 <button class="btn hidden" id="unlockBtn">Unlock Wall</button>
-<button class="btn-skip" id="skipBtn">仕事に戻る — Return to work</button>
 <p class="status" id="status">Unlocked! Return to your PC.</p>
 
 <script>
@@ -316,7 +312,6 @@ h1{font-size:1.5rem;margin-bottom:1rem;font-weight:600}
   var timeEl = document.getElementById('time');
   var circleEl = document.getElementById('circle');
   var btnEl = document.getElementById('unlockBtn');
-  var skipEl = document.getElementById('skipBtn');
   var msgEl = document.getElementById('msg');
   var statusEl = document.getElementById('status');
   var unlocked = false;
@@ -336,7 +331,6 @@ h1{font-size:1.5rem;margin-bottom:1rem;font-weight:600}
       timeEl.textContent = '00:00';
       msgEl.innerHTML = '思考の整理はできましたか？<br>ボタンを押して再開してください。';
       btnEl.classList.remove('hidden');
-      skipEl.classList.add('hidden');
     }
   }, 1000);
 
@@ -344,14 +338,12 @@ h1{font-size:1.5rem;margin-bottom:1rem;font-weight:600}
     if(unlocked) return;
     unlocked = true;
     btnEl.classList.add('hidden');
-    skipEl.classList.add('hidden');
     statusEl.style.display = 'block';
     clearInterval(timer);
     fetch(SERVER+'/unlock?token='+TOKEN,{method:'POST'});
   }
 
   btnEl.addEventListener('click', doUnlock);
-  skipEl.addEventListener('click', doUnlock);
 })();
 </script>
 </body>

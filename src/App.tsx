@@ -124,6 +124,7 @@ function App() {
       <Overlay
         stuckProb={cognitiveState.stuck}
         isWallActive={isWallActive}
+        keyboardIdleMs={keyboardIdleMs}
       />
     );
   }

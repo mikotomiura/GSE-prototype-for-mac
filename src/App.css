@@ -348,10 +348,15 @@ body {
   font-weight: 600;
 }
 
-.wall-timer {
-  font-size: 2rem;
-  opacity: 0.5;
-  margin-top: 1.5rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 300;
+/* Keystroke warning during Wall */
+.wall-typing-warning {
+  font-size: 1.1rem;
+  color: var(--color-stuck);
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 8px;
+  padding: 0.5rem 1.2rem;
+  margin-top: 1rem;
+  font-weight: 600;
+  animation: pulse 1.5s infinite;
 }
