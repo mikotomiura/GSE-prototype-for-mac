@@ -26,6 +26,7 @@ function App() {
   const [isWallActive, setIsWallActive] = useState(false);
   // null = 初回確認中, true = フック有効, false = 権限未付与
   const [hookActive, setHookActive] = useState<boolean | null>(null);
+  const [keyboardIdleMs, setKeyboardIdleMs] = useState(0);
 
   // D-1: getCurrentWindow() を useMemo でメモ化し不要な再生成を防止
   const currentWindow = useMemo(() => getCurrentWindow(), []);
@@ -38,12 +39,16 @@ function App() {
       .catch(() => setHookActive(true)); // エラー時は楽観的に true
   }, []);
 
-  // 2. Poll Cognitive State (Every 500ms)
+  // 2. Poll Cognitive State (Every 500ms) + Keyboard Idle
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        const state = await invoke<CognitiveStateRaw>("get_cognitive_state");
+        const [state, idle] = await Promise.all([
+          invoke<CognitiveStateRaw>("get_cognitive_state"),
+          invoke<number>("get_keyboard_idle_ms"),
+        ]);
         setCognitiveState(state);
+        setKeyboardIdleMs(idle);
       } catch (e) {
         console.error("Failed to fetch state:", e);
       }
@@ -82,12 +87,27 @@ function App() {
     };
   }, []);
 
-  // 4. Sensor Integration (Unlock Logic)
+  // 4. Sensor Integration (Unlock Logic) + メインウィンドウへのフォーカス復帰
   useEffect(() => {
     const unlisten = listen("sensor-accelerometer", (event) => {
       if (event.payload === "move") {
         setIsWallActive(false);
+        // メインウィンドウへフォーカスを自動復帰
+        if (windowLabel !== "overlay") {
+          currentWindow.setFocus().catch(() => {});
+        }
       }
+    });
+
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, [windowLabel, currentWindow]);
+
+  // 5. Monk Mode — wall-activate イベントリスナー
+  useEffect(() => {
+    const unlisten = listen("wall-activate", () => {
+      setIsWallActive(true);
     });
 
     return () => {
@@ -115,6 +135,7 @@ function App() {
       cognitiveState={cognitiveState}
       onQuit={handleQuit}
       hookActive={hookActive}
+      keyboardIdleMs={keyboardIdleMs}
     />
   );
 }

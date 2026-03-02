@@ -130,6 +130,41 @@ body {
   background-color: var(--color-stuck);
 }
 
+/* Session Info Row */
+.session-info {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 400px;
+  font-size: 0.78rem;
+  opacity: 0.7;
+  padding: 0.3rem 0;
+}
+
+.session-time,
+.keyboard-status {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Monk Mode Button */
+.monk-mode-button {
+  width: 100%;
+  max-width: 400px;
+  padding: 0.5rem 0.75rem;
+  background: rgba(248, 113, 113, 0.15);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 8px;
+  color: var(--color-stuck);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, opacity 0.2s;
+}
+
+.monk-mode-button:hover {
+  background: rgba(248, 113, 113, 0.25);
+}
+
 .info-box {
   margin-top: auto;
   font-size: 0.78rem;

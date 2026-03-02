@@ -15,7 +15,7 @@ use core_graphics::event::{
 use crate::analysis::features::InputEvent;
 use super::{
     EVENT_SENDER, IME_ACTIVE, IME_COMPOSING, IME_OPEN, IME_STATE_DIRTY,
-    JIS_KEYBOARD_SEEN, POLL_WAKE_TX,
+    JIS_KEYBOARD_SEEN, LAST_KEYSTROKE_TIMESTAMP, POLL_WAKE_TX,
     VK_DBE_ALPHANUMERIC, VK_DBE_DBCSCHAR, VK_DBE_HIRAGANA, VK_DBE_KATAKANA,
     VK_DBE_SBCSCHAR, VK_KANJI,
 };
@@ -148,6 +148,9 @@ fn handle_event(event_type: CGEventType, event: &CGEvent) {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
+
+    // Update last keystroke timestamp for idle detection
+    LAST_KEYSTROKE_TIMESTAMP.store(timestamp, Ordering::Relaxed);
 
     // IME mode tracking via JIS physical IME keys.
     // Mirrors the Windows VK_DBE_* handler in windows_impl.rs.

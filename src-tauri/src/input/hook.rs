@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use crossbeam_channel::Sender;
@@ -60,6 +60,11 @@ pub static IME_STATE_DIRTY: AtomicBool = AtomicBool::new(false);
 /// the user has a JIS keyboard, so we disable TIS polling and trust IME_OPEN
 /// (managed by the hook callback) as the single source of truth.
 pub static JIS_KEYBOARD_SEEN: AtomicBool = AtomicBool::new(false);
+
+/// Last keystroke timestamp (millis since UNIX_EPOCH).
+/// Updated by the CGEventTap callback on every keyDown/keyUp.
+/// Read by `get_keyboard_idle_ms` Tauri command.
+pub static LAST_KEYSTROKE_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
 
 pub static EVENT_SENDER: OnceLock<Sender<InputEvent>> = OnceLock::new();
 /// Wake channel for the IME open polling thread.

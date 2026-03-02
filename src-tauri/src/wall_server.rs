@@ -110,7 +110,7 @@ fn server_loop<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) {
     let start = Instant::now();
-    let fallback_timeout = Duration::from_secs(60);
+    let fallback_timeout = Duration::from_secs(150);
 
     // Build the server URL for embedding in the HTML page
     let port = server
@@ -124,7 +124,7 @@ fn server_loop<R: Runtime>(
     loop {
         // 60-second auto-unlock fallback
         if start.elapsed() > fallback_timeout {
-            tracing::info!("WallServer: 60s timeout — auto-unlocking wall");
+            tracing::info!("WallServer: 150s timeout — auto-unlocking wall");
             let _ = app.emit("sensor-accelerometer", "move");
             break;
         }
@@ -278,109 +278,63 @@ const SHAKE_HTML_TEMPLATE: &str = r##"<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>GSE - Unlock</title>
+<title>GSE - Zen Timer</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-  background:#0f172a;color:#f8fafc;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;
-  height:100vh;height:100dvh;padding:1.5rem;text-align:center;
-  -webkit-user-select:none;user-select:none;
-}
-h1{font-size:1.4rem;margin-bottom:0.5rem}
-.sub{font-size:0.95rem;opacity:0.7;margin-bottom:1.5rem}
-.progress-bg{
-  width:80%;max-width:280px;height:20px;
-  background:rgba(255,255,255,0.1);border-radius:10px;
-  overflow:hidden;margin:1rem 0;
-}
-.progress-fill{
-  height:100%;background:#4ade80;border-radius:10px;
-  transition:width 0.3s ease;width:0%;
-}
-.btn{
-  padding:0.9rem 2.2rem;font-size:1.1rem;
-  background:#4ade80;color:#0f172a;border:none;
-  border-radius:10px;cursor:pointer;font-weight:700;
-  -webkit-tap-highlight-color:transparent;
-}
-.btn:disabled{opacity:0.4;cursor:not-allowed}
-.status{font-size:1rem;margin:0.8rem 0;min-height:2.5em;opacity:0.85}
-.icon{font-size:3rem;margin-bottom:0.8rem}
-.done{color:#4ade80;font-size:1.5rem;font-weight:700}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0f172a;color:#f8fafc;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;height:100dvh;padding:2rem;text-align:center;user-select:none;}
+h1{font-size:1.5rem;margin-bottom:1rem;font-weight:600}
+.sub{font-size:1rem;opacity:0.8;margin-bottom:2rem;line-height:1.5}
+.timer-circle{width:150px;height:150px;border-radius:50%;border:4px solid rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;font-size:3rem;font-weight:300;margin-bottom:2rem;position:relative;}
+.timer-circle::after{content:'';position:absolute;top:-4px;left:-4px;right:-4px;bottom:-4px;border-radius:50%;border:4px solid transparent;border-top-color:#4ade80;animation:spin 2s linear infinite;opacity:0;}
+.timer-circle.active::after{opacity:1;}
+@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
+.btn{padding:1rem 2.5rem;font-size:1.1rem;background:#4ade80;color:#0f172a;border:none;border-radius:12px;cursor:pointer;font-weight:700;transition:transform 0.1s;}
+.btn:active{transform:scale(0.95)}
+.btn.hidden{display:none}
+.status{font-size:1.1rem;color:#4ade80;font-weight:600;display:none}
 </style>
 </head>
 <body>
-<div class="icon" id="icon">📱</div>
-<h1>Shake or Walk to Unlock</h1>
-<p class="sub">Move your phone to dismiss the Wall on your computer</p>
-<div class="progress-bg"><div class="progress-fill" id="progress"></div></div>
-<p class="status" id="status">Tap the button to start</p>
-<button class="btn" id="startBtn">Start</button>
+<h1>Take a Break</h1>
+<p class="sub" id="msg">PCから離れて深呼吸してください。<br>2分後にロック解除ボタンが現れます。</p>
+<div class="timer-circle" id="circle"><span id="time">02:00</span></div>
+<button class="btn hidden" id="unlockBtn">Unlock Wall</button>
+<p class="status" id="status">Unlocked! Return to your PC.</p>
 
 <script>
 (function(){
-  var THRESHOLD=3.0,REQUIRED=8,WINDOW=5000;
+  var WAIT_SECONDS = 120;
   var SERVER='__SERVER_URL__',TOKEN='__TOKEN__';
-  var shakes=[],unlocked=false;
-  var statusEl=document.getElementById('status');
-  var progressEl=document.getElementById('progress');
-  var iconEl=document.getElementById('icon');
-  var btnEl=document.getElementById('startBtn');
+  var timeEl = document.getElementById('time');
+  var circleEl = document.getElementById('circle');
+  var btnEl = document.getElementById('unlockBtn');
+  var msgEl = document.getElementById('msg');
+  var statusEl = document.getElementById('status');
 
-  function update(){
-    var now=Date.now();
-    shakes=shakes.filter(function(t){return now-t<WINDOW});
-    var pct=Math.min(100,(shakes.length/REQUIRED)*100);
-    progressEl.style.width=pct+'%';
-    if(shakes.length>=REQUIRED&&!unlocked) doUnlock();
-  }
+  circleEl.classList.add('active');
 
-  function doUnlock(){
-    unlocked=true;
-    statusEl.textContent='Unlocked! Return to your computer.';
-    statusEl.className='status done';
-    iconEl.textContent='\u2705';
-    btnEl.style.display='none';
-    fetch(SERVER+'/unlock?token='+TOKEN,{method:'POST'}).catch(function(){
-      statusEl.textContent='Signal sent. Wall will auto-dismiss in 60s if needed.';
-    });
-  }
+  var timer = setInterval(function(){
+    WAIT_SECONDS--;
+    var m = Math.floor(WAIT_SECONDS / 60);
+    var s = WAIT_SECONDS % 60;
+    timeEl.textContent = '0' + m + ':' + (s < 10 ? '0'+s : s);
 
-  function onMotion(e){
-    if(unlocked)return;
-    var a=e.accelerationIncludingGravity;
-    if(!a||a.x===null)return;
-    var mag=Math.sqrt(a.x*a.x+a.y*a.y+a.z*a.z);
-    var delta=Math.abs(mag-9.81);
-    if(delta>THRESHOLD){shakes.push(Date.now())}
-    update();
-  }
-
-  btnEl.addEventListener('click',function(){
-    // iOS 13+ requires permission via user gesture
-    if(typeof DeviceMotionEvent!=='undefined'&&
-       typeof DeviceMotionEvent.requestPermission==='function'){
-      DeviceMotionEvent.requestPermission().then(function(p){
-        if(p==='granted'){startListening()}
-        else{statusEl.textContent='Motion permission denied. Please allow and retry.'}
-      }).catch(function(err){
-        statusEl.textContent='Permission error: '+err.message;
-      });
-    } else {
-      startListening();
+    if(WAIT_SECONDS <= 0){
+      clearInterval(timer);
+      circleEl.classList.remove('active');
+      circleEl.style.borderColor = '#4ade80';
+      timeEl.textContent = '00:00';
+      msgEl.innerHTML = '思考の整理はできましたか？<br>ボタンを押して再開してください。';
+      btnEl.classList.remove('hidden');
     }
-  });
+  }, 1000);
 
-  function startListening(){
-    window.addEventListener('devicemotion',onMotion);
-    btnEl.disabled=true;
-    btnEl.textContent='Detecting...';
-    statusEl.textContent='Shake your phone or walk around!';
-  }
+  btnEl.addEventListener('click', function(){
+    btnEl.classList.add('hidden');
+    statusEl.style.display = 'block';
+    fetch(SERVER+'/unlock?token='+TOKEN,{method:'POST'});
+  });
 })();
 </script>
 </body>
-</html>
-"##;
+</html>"##;

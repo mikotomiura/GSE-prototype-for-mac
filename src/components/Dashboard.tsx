@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { emit } from "@tauri-apps/api/event";
 
 interface DashboardProps {
   cognitiveState: {
@@ -8,9 +9,20 @@ interface DashboardProps {
   };
   onQuit: () => void;
   hookActive: boolean | null;
+  keyboardIdleMs: number;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit, hookActive }) => {
+const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit, hookActive, keyboardIdleMs }) => {
+  const [sessionSeconds, setSessionSeconds] = useState(0);
+
+  // Session elapsed timer (1Hz)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setSessionSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   const getMaxState = () => {
     const { flow, incubation, stuck } = cognitiveState;
     if (flow >= incubation && flow >= stuck) return 'Flow';
@@ -19,6 +31,22 @@ const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit, hookActiv
   };
 
   const dominant = getMaxState();
+
+  const formatSessionTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  const formatKeyboardStatus = () => {
+    if (keyboardIdleMs === 0) return 'Waiting...';
+    if (keyboardIdleMs < 5000) return 'Active';
+    return `Idle ${Math.floor(keyboardIdleMs / 1000)}s`;
+  };
+
+  const handleMonkMode = () => {
+    emit("wall-activate");
+  };
 
   return (
     <div className={`dashboard-container state-${dominant.toLowerCase()}`}>
@@ -42,6 +70,12 @@ const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit, hookActiv
 
       <div className="state-card">
         <h3>Current State: <span className="dominant-state">{dominant}</span></h3>
+      </div>
+
+      {/* Session & Keyboard Status */}
+      <div className="session-info">
+        <span className="session-time">Session: {formatSessionTime(sessionSeconds)}</span>
+        <span className="keyboard-status">Keyboard: {formatKeyboardStatus()}</span>
       </div>
 
       <div className="metrics-container">
@@ -83,6 +117,10 @@ const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit, hookActiv
         <p>Type naturally. The engine analyzes your keystroke dynamics.</p>
         <p><strong>Incubation</strong> suggests pausing. <strong>Stuck</strong> suggests moving.</p>
       </div>
+
+      <button className="monk-mode-button" onClick={handleMonkMode}>
+        Monk Mode — Force Break
+      </button>
 
       <button className="quit-button" onClick={onQuit}>
         セッション終了

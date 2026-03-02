@@ -381,6 +381,7 @@ IME Polling Thread
 | `IME_ACTIVE` | hook (state machine) | IME Monitor thread → `set_paused()` | Candidate window visible (keystroke state machine) |
 | `IME_STATE_DIRTY` | hook (JIS keys) | polling thread (drain) | Housekeeping |
 | `HOOK_ACTIVE` | `hook_macos::start()` | `get_hook_status` command | Permission banner trigger |
+| `LAST_KEYSTROKE_TIMESTAMP` | hook (every keyDown/keyUp) | `get_keyboard_idle_ms` command | Keyboard idle time calculation |
 
 ### `Option<bool>` Initial State
 
@@ -406,7 +407,19 @@ This ensures exactly **one HMM forward step per second**, making the EMA time co
 | **Lv1** | Nudge | p_stuck > 0.60 | Red vignette (mist) around screen edges | Click-through (transparent to input) |
 | **Lv2** | Wall | p_stuck > 0.70 for 30 s | Full-screen blocking overlay with message | Blocks all input until unlocked |
 
-The Wall is unlocked by the **accelerometer** event (`"sensor-accelerometer"` / `"move"` payload). On macOS, the accelerometer is not implemented — the Wall must be dismissed manually via `setIgnoreCursorEvents(false)` toggle (research prototype limitation).
+### Wall Unlock: Zen Timer (v2.7)
+
+The Wall is unlocked via a **smartphone-based Zen Timer**. When the Wall activates, an embedded HTTP server starts on a random port and the Overlay displays a QR code. Scanning with a smartphone opens a self-contained HTML page with a **2-minute countdown timer**. After 2 minutes, an "Unlock Wall" button appears. If no smartphone is available, the Wall auto-unlocks after **150 seconds** as a fallback.
+
+This replaces the previous DeviceMotion shake detection, which required iOS permission grants and was unreliable across devices.
+
+### Monk Mode (v2.7)
+
+The Dashboard includes a **"Monk Mode — Force Break"** button that manually activates the Wall via `emit("wall-activate")`, regardless of the current cognitive state. This allows users to proactively take a break.
+
+### Keyboard Idle Detection (v2.7)
+
+A `LAST_KEYSTROKE_TIMESTAMP` atomic tracks the most recent keypress. The `get_keyboard_idle_ms` IPC command returns milliseconds since the last keystroke. The Dashboard displays real-time session elapsed time and keyboard activity status (Active / Idle).
 
 ---
 
@@ -504,7 +517,7 @@ npm run tauri build
 | Feature | Status | Impact |
 |---|---|---|
 | IME candidate window detection (`IME_ACTIVE`) | Detected (keystroke state machine) | HMM pauses during candidate selection; heuristic — may briefly misfire if Space is used for non-conversion purposes while `IME_OPEN` |
-| Accelerometer unlock | Not implemented | Wall requires QR/smartphone unlock or 60s timeout |
+| Wall unlock | Zen Timer (2 min smartphone wait) | QR → smartphone Zen Timer → unlock button; 150s auto-unlock fallback if no phone |
 | JIS IME keys (ANSI keyboard) | Detected via TIS polling only (100ms) | Negligible latency difference |
 | First-run Input Monitoring permission | Requires restart after granting | One-time setup |
 
@@ -529,4 +542,4 @@ Research prototype. All rights reserved.
 
 ---
 
-*Last updated: 2026-03-02*
+*Last updated: 2026-03-03*

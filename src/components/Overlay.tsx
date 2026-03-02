@@ -15,15 +15,16 @@ interface WallServerInfo {
 const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
     const [nudgeOpacity, setNudgeOpacity] = useState(0);
     const [qrSvg, setQrSvg] = useState<string | null>(null);
-    const [wallTimer, setWallTimer] = useState(60);
+    const [wallTimer, setWallTimer] = useState(150);
     const currentWindow = useMemo(() => getCurrentWindow(), []);
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-    // 透過背景を設定（overlay ウィンドウ用）
+    // 透過背景 + 即座にクリック透過を設定（マウント直後）
     useEffect(() => {
         document.documentElement.style.background = 'transparent';
         document.body.style.background = 'transparent';
-    }, []);
+        currentWindow.setIgnoreCursorEvents(true);
+    }, [currentWindow]);
 
     // isWallActive に応じてクリック透過をトグル
     // Lv1 (nudge): クリック透過 → ユーザーは下のウィンドウを操作可能
@@ -38,7 +39,7 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
             // Wall 解除時: サーバー停止 + 状態リセット
             invoke("stop_wall_server").catch(console.error);
             setQrSvg(null);
-            setWallTimer(60);
+            setWallTimer(150);
             if (timerRef.current) {
                 clearInterval(timerRef.current);
                 timerRef.current = null;
@@ -55,8 +56,8 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
                 console.error("Failed to start wall server:", err);
             });
 
-        // 60秒カウントダウン (フォールバック解除の視覚フィードバック)
-        setWallTimer(60);
+        // 150秒カウントダウン (フォールバック解除の視覚フィードバック)
+        setWallTimer(150);
         timerRef.current = setInterval(() => {
             setWallTimer((prev) => {
                 if (prev <= 1) {

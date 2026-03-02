@@ -48,6 +48,18 @@ fn get_cognitive_state(state: State<CognitiveStateEngine>) -> HashMap<String, f6
     map
 }
 
+/// 最終キーストロークからの経過時間（ミリ秒）を返す。
+/// 打鍵がまだ無い場合は 0 を返す。
+#[tauri::command]
+fn get_keyboard_idle_ms() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let last = crate::input::hook::LAST_KEYSTROKE_TIMESTAMP.load(Ordering::Relaxed);
+    if last == 0 { 0 } else { now.saturating_sub(last) }
+}
+
 /// キーボードフック（Input Monitoring）の状態を返す。
 /// Windows: 常に true（権限不要）。
 /// macOS: CGEventTap が正常にインストールされている場合のみ true。
@@ -426,6 +438,7 @@ pub fn run() {
         .manage(wall_state)
         .invoke_handler(tauri::generate_handler![
             get_cognitive_state,
+            get_keyboard_idle_ms,
             quit_app,
             get_session_file,
             get_hook_status,
