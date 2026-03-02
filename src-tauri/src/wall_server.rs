@@ -301,32 +301,59 @@ h1{font-size:1.5rem;margin-bottom:1rem;font-weight:600}
 
 <script>
 (function(){
-  var WAIT_SECONDS = 120;
+  var TOTAL_MS = 120 * 1000;
   var SERVER='__SERVER_URL__',TOKEN='__TOKEN__';
+  var endTime = Date.now() + TOTAL_MS;
   var timeEl = document.getElementById('time');
   var circleEl = document.getElementById('circle');
   var btnEl = document.getElementById('unlockBtn');
   var msgEl = document.getElementById('msg');
   var statusEl = document.getElementById('status');
   var unlocked = false;
+  var finished = false;
 
   circleEl.classList.add('active');
 
-  var timer = setInterval(function(){
-    WAIT_SECONDS--;
-    var m = Math.floor(WAIT_SECONDS / 60);
-    var s = WAIT_SECONDS % 60;
+  // Screen Wake Lock API — 画面オフを防止 (iOS 16.4+, Android Chrome 84+)
+  var wakeLock = null;
+  function requestWakeLock(){
+    if('wakeLock' in navigator){
+      navigator.wakeLock.request('screen').then(function(lock){
+        wakeLock = lock;
+      }).catch(function(){});
+    }
+  }
+  requestWakeLock();
+
+  // Date.now() ベースのタイマー — setInterval 停止中も正確に計測
+  function updateTimer(){
+    if(finished) return;
+    var remaining = Math.max(0, Math.ceil((endTime - Date.now()) / 1000));
+    var m = Math.floor(remaining / 60);
+    var s = remaining % 60;
     timeEl.textContent = '0' + m + ':' + (s < 10 ? '0'+s : s);
 
-    if(WAIT_SECONDS <= 0){
+    if(remaining <= 0){
+      finished = true;
       clearInterval(timer);
       circleEl.classList.remove('active');
       circleEl.style.borderColor = '#4ade80';
       timeEl.textContent = '00:00';
       msgEl.innerHTML = '思考の整理はできましたか？<br>ボタンを押して再開してください。';
       btnEl.classList.remove('hidden');
+      if(wakeLock){ wakeLock.release(); wakeLock = null; }
     }
-  }, 1000);
+  }
+
+  var timer = setInterval(updateTimer, 1000);
+
+  // 画面復帰時にタイマーを即更新 + Wake Lock を再取得
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden){
+      updateTimer();
+      if(!finished) requestWakeLock();
+    }
+  });
 
   function doUnlock(){
     if(unlocked) return;
@@ -334,6 +361,7 @@ h1{font-size:1.5rem;margin-bottom:1rem;font-weight:600}
     btnEl.classList.add('hidden');
     statusEl.style.display = 'block';
     clearInterval(timer);
+    if(wakeLock){ wakeLock.release(); wakeLock = null; }
     fetch(SERVER+'/unlock?token='+TOKEN,{method:'POST'});
   }
 
