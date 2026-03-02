@@ -57,6 +57,8 @@
 │  │ 任意のアプリ │ ─────────────────── │  フックスレッド（Rust）  │   │
 │  │ （フォアグラ │  （入力監視権限）   │  CGEventTapCreate        │   │
 │  │  ウンド）   │                     │  CFRunLoop（専用スレッド）│   │
+│  │             │                     │  IME 合成状態マシン      │   │
+│  │             │                     │  （→ IME_ACTIVE）        │   │
 │  └─────────────┘                     └──────────┬───────────────┘   │
 │                                                 │ crossbeam channel  │
 │                                      ┌──────────▼───────────────┐   │
@@ -103,7 +105,7 @@
     ├─ 分析スレッド            ← recv_timeout(1 s) → 1 Hz タイマーゲート; HMM 更新 ≤ 1回/秒
     │       │ Arc<Mutex<CognitiveStateEngine>> (Tauri managed state)
     │       │ 合成摩擦: 沈黙 ≥ 20 s → F6/F3 を Stuck 方向へ漸増
-    ├─ IME モニタースレッド    ← is_candidate_window_open() 100ms ポーリング（CGWindowList）
+    ├─ IME モニタースレッド    ← IME_ACTIVE を 100ms ごとに読み取り（フックスレッドの状態マシンが設定）
     ├─ IME ポーリングスレッド  ← recv_timeout(100ms) ウェイク; TIS を dispatch_sync_f でメインキューへ
     │
     ├─ ロガースレッド          ← bounded channel(512) → NDJSON ファイル (BufWriter)
@@ -136,9 +138,9 @@ GSE-prototype/
 │   │   │   ├── features.rs      # F1–F6 特徴量抽出 + 沈黙合成
 │   │   │   └── mod.rs
 │   │   ├── input/
-│   │   │   ├── hook.rs          # 共有アトミック（IME_OPEN, EVENT_SENDER など）
-│   │   │   ├── hook_macos.rs    # CGEventTap 実装（macOS キーボードフック）
-│   │   │   ├── ime.rs           # ImeMonitor スタブ + TIS ポーリングディスパッチャ
+│   │   │   ├── hook.rs          # 共有アトミック（IME_OPEN, IME_ACTIVE, IME_COMPOSING など）
+│   │   │   ├── hook_macos.rs    # CGEventTap + IME 合成状態マシン
+│   │   │   ├── ime.rs           # ImeMonitor（IME_ACTIVE 読み取り）+ IME open ポーリングスレッド
 │   │   │   ├── ime_macos.rs     # TIS Carbon FFI（dispatch_sync_f でメインキューへ）
 │   │   │   └── mod.rs
 │   │   ├── lib.rs               # Tauri セットアップ、スレッド管理、IPC コマンド
@@ -285,9 +287,47 @@ F3_synthetic = clamp((silence_secs − 30) / 100, 0.0, 0.40)
 1. **候補選択フェーズ**（スペース → 漢字候補リスト表示中）：ナビゲーションキーが特徴量ベクトルを汚染する
 2. **入力モードコンテキスト**（あモード vs Aモード）：フライトタイムの基準値が大きく異なる
 
-### 候補ウィンドウ検出
+### 候補ウィンドウ検出：キーストローク状態マシン（v2.6）
 
-macOS では `ImeMonitor::is_candidate_window_open()` は `CGWindowListCopyWindowInfo` を使い、画面上のウィンドウを列挙して日本語 IME プロセス（`JapaneseIM`、`GoogleJapaneseInput`）が所有する非レイヤー0 ウィンドウ（候補オーバーレイ）を検出します。候補ウィンドウ検出時は HMM エンジンを一時停止し、Flow 状態を強制します。Input Monitoring 以外の追加パーミッションは不要です（`kCGWindowOwnerName` は Screen Recording で制限されません）。
+macOS では、IME 候補ウィンドウの表示状態を CGEventTap コールバック内の**キーストローク駆動状態マシン**（`hook_macos.rs`）で検出します。候補ウィンドウ検出時は HMM エンジンを**一時停止**し、**Flow 状態を強制**（`force_flow_state()` が `[0.98, 0.01, 0.01]` を設定）します。Input Monitoring 以外の追加パーミッションは不要です。
+
+**状態マシン遷移**（`IME_COMPOSING` と `IME_ACTIVE` アトミックで追跡）：
+
+```
+               文字キー (A-Z, 0-9)      Space
+   IDLE ─────────────────────── COMPOSING ────── CANDIDATING
+    ▲                               │                  │
+    │  Enter/Escape                 │  Enter/Escape    │
+    └───────────────────────────────┘──────────────────┘
+                                         ▲       │
+                                         │  BS   │
+                                         └───────┘
+```
+
+| トリガー | 遷移 | アクション |
+|---|---|---|
+| 文字/数字キー（`IME_OPEN` 中） | IDLE → COMPOSING | `IME_COMPOSING = true` |
+| Space（COMPOSING 中） | COMPOSING → CANDIDATING | `IME_ACTIVE = true`（HMM 一時停止） |
+| Enter | 任意 → IDLE | 両方 `false` にリセット（確定） |
+| Escape | 任意 → IDLE | 両方 `false` にリセット（キャンセル） |
+| Backspace（CANDIDATING 中） | CANDIDATING → COMPOSING | `IME_ACTIVE = false`（編集に戻る） |
+| 文字キー（CANDIDATING 中） | CANDIDATING → COMPOSING | `IME_ACTIVE = false`（新規合成開始） |
+
+このアプローチの特徴：
+- **ゼロパーミッション**：アクセシビリティ権限やスクリーンレコーディング権限は不要
+- **ゼロレイテンシ**：状態更新は CGEventTap コールバック内で即座に実行
+- **macOS バージョン非依存**：OS が候補ウィンドウをどのようにレンダリングするかに関係なく動作
+
+#### macOS 26（Tahoe）で却下されたアプローチ
+
+開発中に 2 つの代替アプローチを調査・却下しました：
+
+| アプローチ | 失敗モード | 詳細 |
+|---|---|---|
+| **CGWindowListCopyWindowInfo** | CGWindow が生成されない | macOS 26 の IME プロセス `JapaneseIM-RomajiTyping` は候補ポップアップに CGWindow オブジェクトを生成しない。候補 UI はプライベート CALayer/SwiftUI メカニズムでレンダリングされ、CGWindowList API からは不可視。 |
+| **Accessibility API（AXMarkedTextRange）** | バックグラウンドから API エラー | `AXUIElementCopyAttributeValue`（`kAXFocusedApplicationAttribute`）が macOS 26 のバックグラウンドスレッドから `-25204 (kAXErrorCannotComplete)` を返す。`AXIsProcessTrusted()` が `true` を返す場合でも発生。Tauri バックグラウンドプロセスからの AX ベース合成検出は不可能。 |
+
+キーストローク状態マシンは、両 API ベースの手法が失敗した後に第三のアプローチとして開発されました。実際の日本語入力セッションで検証済み — 7.5 秒の熟考期間を含む 5/5 の候補ウィンドウを正確に検出。
 
 ### IME モード検出（macOS）
 
@@ -337,9 +377,10 @@ IME ポーリングスレッド
 
 | アトミック | 書き込み元 | 読み取り元 | 用途 |
 | --- | --- | --- | --- |
-| `IME_OPEN` | フック（JIS キー）、ポーリングスレッド | 分析スレッド | 現在の IME モード |
+| `IME_OPEN` | フック（JIS キー）、ポーリングスレッド | 分析スレッド | 現在の IME モード（あ/A） |
+| `IME_COMPOSING` | フック（状態マシン） | — | インライン合成中（ローマ字 → かな） |
+| `IME_ACTIVE` | フック（状態マシン） | IME モニタースレッド → `set_paused()` | 候補ウィンドウ表示中（キーストローク状態マシン） |
 | `IME_STATE_DIRTY` | フック（JIS キー） | ポーリングスレッド（ドレイン） | ハウスキーピング |
-| `IME_ACTIVE` | IME モニタースレッド | `get_paused()` 呼び出し元 | 候補ウィンドウ表示中（CGWindowList） |
 | `HOOK_ACTIVE` | `hook_macos::start()` | `get_hook_status` コマンド | 権限バナー表示トリガー |
 
 ### `Option<bool>` 初期状態
@@ -462,8 +503,8 @@ npm run tauri build
 
 | 機能 | 状態 | 影響 |
 | --- | --- | --- |
-| IME 候補ウィンドウ検出（`IME_ACTIVE`） | 検出済み（CGWindowList） | 候補選択中は HMM を一時停止 |
-| 加速度センサー Wall 解除 | 未実装 | Wall は手動解除が必要 |
+| IME 候補ウィンドウ検出（`IME_ACTIVE`） | 検出済み（キーストローク状態マシン） | 候補選択中は HMM を一時停止；ヒューリスティック — `IME_OPEN` 中に変換以外で Space を押した場合に一瞬誤検出の可能性 |
+| 加速度センサー Wall 解除 | 未実装 | Wall は QR/スマートフォン解除 or 60秒タイムアウト |
 | JIS IME キー（ANSI キーボード） | TIS ポーリング（100ms）のみ | レイテンシの差は体感上無視可能 |
 | 初回 Input Monitoring 権限 | 付与後にアプリ再起動が必要 | 初回セットアップのみ |
 
@@ -503,4 +544,4 @@ npm run tauri build
 
 ---
 
-*最終更新：2026-02-28*
+*最終更新：2026-03-02*

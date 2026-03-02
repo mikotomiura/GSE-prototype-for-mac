@@ -56,6 +56,8 @@ The three states are grounded in established cognitive science literature:
 │  │  Any App    │ ─────────────────── │   Hook Thread (Rust)     │   │
 │  │ (foreground)│  (Input Monitoring) │  CGEventTapCreate        │   │
 │  └─────────────┘                     │  CFRunLoop (dedicated)   │   │
+│                                      │  IME composition state   │   │
+│                                      │  machine (→ IME_ACTIVE)  │   │
 │                                      └──────────┬───────────────┘   │
 │                                                 │ crossbeam channel  │
 │                                      ┌──────────▼───────────────┐   │
@@ -102,7 +104,7 @@ Main Thread (Tauri event loop + GCD main queue for TIS)
     ├─ Analysis Thread     ← recv_timeout(1 s) → 1 Hz timer gate; HMM update ≤ 1×/sec
     │       │ Arc<Mutex<CognitiveStateEngine>> (Tauri managed state)
     │       │ Synthetic Friction: silence ≥ 20 s → ramps F6/F3 toward Stuck
-    ├─ IME Monitor Thread  ← polls is_candidate_window_open() every 100 ms (CGWindowList)
+    ├─ IME Monitor Thread  ← reads IME_ACTIVE every 100 ms (set by Hook Thread state machine)
     ├─ IME Polling Thread  ← recv_timeout(100 ms) wake; TIS dispatch_sync_f to main queue
     │
     ├─ Logger Thread       ← bounded channel(512) → NDJSON file (BufWriter)
@@ -135,9 +137,9 @@ GSE-prototype/
 │   │   │   ├── features.rs      # F1–F6 extraction + silence synthesis
 │   │   │   └── mod.rs
 │   │   ├── input/
-│   │   │   ├── hook.rs          # Shared statics (IME_OPEN, EVENT_SENDER, etc.)
-│   │   │   ├── hook_macos.rs    # CGEventTap implementation (macOS keyboard hook)
-│   │   │   ├── ime.rs           # ImeMonitor stub + TIS polling dispatcher
+│   │   │   ├── hook.rs          # Shared atomics (IME_OPEN, IME_ACTIVE, IME_COMPOSING, etc.)
+│   │   │   ├── hook_macos.rs    # CGEventTap + IME composition state machine
+│   │   │   ├── ime.rs           # ImeMonitor (reads IME_ACTIVE) + IME open polling thread
 │   │   │   ├── ime_macos.rs     # TIS Carbon FFI (dispatch_sync_f to main queue)
 │   │   │   └── mod.rs
 │   │   ├── lib.rs               # Tauri setup, thread orchestration, IPC commands
@@ -284,9 +286,47 @@ Japanese IME input introduces two distinct challenges for keystroke analysis:
 1. **Candidate selection phase**: navigation keystrokes should not pollute feature vectors
 2. **Input mode context** (あ mode vs A mode): flight-time norms differ significantly
 
-### Candidate Window Suppression
+### Candidate Window Detection: Keystroke State Machine (v2.6)
 
-On macOS, `ImeMonitor::is_candidate_window_open()` uses `CGWindowListCopyWindowInfo` to detect IME candidate overlay windows. It enumerates on-screen windows and checks if any belong to a known Japanese IME process (`JapaneseIM`, `GoogleJapaneseInput`) at a non-zero window layer. When a candidate window is detected, the HMM engine is paused and forced to Flow state. No additional permissions are required beyond Input Monitoring (`kCGWindowOwnerName` is not gated by Screen Recording).
+On macOS, IME candidate window visibility is detected by a **keystroke-driven state machine** in the CGEventTap callback (`hook_macos.rs`). When the candidate window is detected, the HMM engine is **paused** and **forced to Flow state** (`force_flow_state()` sets `[0.98, 0.01, 0.01]`). No additional permissions are required beyond Input Monitoring.
+
+**State machine transitions** (tracked via `IME_COMPOSING` and `IME_ACTIVE` atomics):
+
+```
+               Letter (A-Z, 0-9)        Space
+   IDLE ─────────────────────── COMPOSING ────── CANDIDATING
+    ▲                               │                  │
+    │  Enter/Escape                 │  Enter/Escape    │
+    └───────────────────────────────┘──────────────────┘
+                                         ▲       │
+                                         │  BS   │
+                                         └───────┘
+```
+
+| Trigger | From → To | Action |
+|---|---|---|
+| Letter/digit while `IME_OPEN` | IDLE → COMPOSING | `IME_COMPOSING = true` |
+| Space while COMPOSING | COMPOSING → CANDIDATING | `IME_ACTIVE = true` (HMM pauses) |
+| Enter | Any → IDLE | Both reset to `false` (confirmed) |
+| Escape | Any → IDLE | Both reset to `false` (cancelled) |
+| Backspace while CANDIDATING | CANDIDATING → COMPOSING | `IME_ACTIVE = false` (back to editing) |
+| Letter while CANDIDATING | CANDIDATING → COMPOSING | `IME_ACTIVE = false` (new composition) |
+
+This approach is:
+- **Zero-permission**: No Accessibility or Screen Recording required.
+- **Zero-latency**: State updates happen in the CGEventTap callback itself.
+- **macOS-version-independent**: Works regardless of how the OS renders the candidate window.
+
+#### Rejected Approaches on macOS 26 (Tahoe)
+
+Two alternative approaches were investigated and rejected during development:
+
+| Approach | Failure Mode | Details |
+|---|---|---|
+| **CGWindowListCopyWindowInfo** | No CGWindows created | `JapaneseIM-RomajiTyping` (macOS 26's IME process) does not create CGWindow objects for the candidate popup. The candidate UI is rendered via a private CALayer/SwiftUI mechanism that is invisible to the CGWindowList API. |
+| **Accessibility API (AXMarkedTextRange)** | API error from background | `AXUIElementCopyAttributeValue` with `kAXFocusedApplicationAttribute` returns `-25204 (kAXErrorCannotComplete)` from background threads on macOS 26, even when `AXIsProcessTrusted()` returns `true`. This makes AX-based composition detection impossible from a Tauri background process. |
+
+The keystroke state machine was developed as the third approach after both API-based methods failed. It has been validated against real Japanese input sessions, correctly detecting 5/5 candidate windows including a 7.5-second deliberation period.
 
 ### IME Mode Detection (macOS)
 
@@ -336,9 +376,10 @@ IME Polling Thread
 
 | Atomic | Writer | Reader | Purpose |
 |---|---|---|---|
-| `IME_OPEN` | hook (JIS keys), polling thread | analysis thread | Current IME mode |
+| `IME_OPEN` | hook (JIS keys), polling thread | analysis thread | Current IME mode (あ/A) |
+| `IME_COMPOSING` | hook (state machine) | — | Inline composition active (romaji → kana) |
+| `IME_ACTIVE` | hook (state machine) | IME Monitor thread → `set_paused()` | Candidate window visible (keystroke state machine) |
 | `IME_STATE_DIRTY` | hook (JIS keys) | polling thread (drain) | Housekeeping |
-| `IME_ACTIVE` | IME Monitor thread | `get_paused()` callers | Candidate window visible (CGWindowList) |
 | `HOOK_ACTIVE` | `hook_macos::start()` | `get_hook_status` command | Permission banner trigger |
 
 ### `Option<bool>` Initial State
@@ -462,8 +503,8 @@ npm run tauri build
 
 | Feature | Status | Impact |
 |---|---|---|
-| IME candidate window detection (`IME_ACTIVE`) | Detected (CGWindowList) | HMM pauses during candidate selection |
-| Accelerometer unlock | Not implemented | Wall requires manual click-through toggle |
+| IME candidate window detection (`IME_ACTIVE`) | Detected (keystroke state machine) | HMM pauses during candidate selection; heuristic — may briefly misfire if Space is used for non-conversion purposes while `IME_OPEN` |
+| Accelerometer unlock | Not implemented | Wall requires QR/smartphone unlock or 60s timeout |
 | JIS IME keys (ANSI keyboard) | Detected via TIS polling only (100ms) | Negligible latency difference |
 | First-run Input Monitoring permission | Requires restart after granting | One-time setup |
 
@@ -488,4 +529,4 @@ Research prototype. All rights reserved.
 
 ---
 
-*Last updated: 2026-02-28*
+*Last updated: 2026-03-02*
