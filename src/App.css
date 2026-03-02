@@ -24,12 +24,13 @@ body {
   padding: 0;
   width: 100vw;
   height: 100vh;
+  /* Dashboard handles its own scroll via overflow-y: auto */
   overflow: hidden;
 }
 
 /* Dashboard Styles */
 .dashboard-container {
-  padding: 0.875rem 1.25rem;
+  padding: 0.875rem 1.25rem 1.5rem;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -37,6 +38,12 @@ body {
   height: 100vh;
   box-sizing: border-box;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Prevent flex children from shrinking to zero — ensures scrollability */
+.dashboard-container > * {
+  flex-shrink: 0;
 }
 
 .dashboard-container h2 {
@@ -146,23 +153,34 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Monk Mode Button */
+/* Monk Mode Toggle Button */
 .monk-mode-button {
   width: 100%;
   max-width: 400px;
   padding: 0.5rem 0.75rem;
-  background: rgba(248, 113, 113, 0.15);
-  border: 1px solid rgba(248, 113, 113, 0.4);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 8px;
-  color: var(--color-stuck);
+  color: rgba(255, 255, 255, 0.6);
   font-size: 0.85rem;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.2s, opacity 0.2s;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
 }
 
 .monk-mode-button:hover {
-  background: rgba(248, 113, 113, 0.25);
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.monk-mode-button.active {
+  background: rgba(250, 204, 21, 0.15);
+  border-color: rgba(250, 204, 21, 0.5);
+  color: var(--color-incubation);
+}
+
+.monk-mode-button.active:hover {
+  background: rgba(250, 204, 21, 0.25);
 }
 
 .info-box {
@@ -242,7 +260,6 @@ body {
   position: relative;
   overflow: hidden;
   background: transparent;
-  /* pointer-events handled by layers */
 }
 
 .nudge-layer {
@@ -267,6 +284,8 @@ body {
   z-index: 20;
   pointer-events: auto;
   transition: opacity 0.3s ease;
+  overflow-y: auto;
+  padding: 2rem;
 }
 
 .wall-layer h1 {
@@ -317,9 +336,22 @@ body {
   50% { opacity: 1; }
 }
 
+/* Phone connected badge */
+.phone-connected-badge {
+  font-size: 0.9rem;
+  color: var(--color-flow);
+  background: rgba(74, 222, 128, 0.12);
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  border-radius: 8px;
+  padding: 0.4rem 1rem;
+  margin-top: 0.5rem;
+  font-weight: 600;
+}
+
 .wall-timer {
-  font-size: 1rem;
-  opacity: 0.4;
+  font-size: 2rem;
+  opacity: 0.5;
   margin-top: 1.5rem;
   font-variant-numeric: tabular-nums;
+  font-weight: 300;
 }

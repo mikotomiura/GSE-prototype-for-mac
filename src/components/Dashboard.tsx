@@ -10,9 +10,10 @@ interface DashboardProps {
   onQuit: () => void;
   hookActive: boolean | null;
   keyboardIdleMs: number;
+  isMonkMode: boolean;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit, hookActive, keyboardIdleMs }) => {
+const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit, hookActive, keyboardIdleMs, isMonkMode }) => {
   const [sessionSeconds, setSessionSeconds] = useState(0);
 
   // Session elapsed timer (1Hz)
@@ -44,8 +45,8 @@ const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit, hookActiv
     return `Idle ${Math.floor(keyboardIdleMs / 1000)}s`;
   };
 
-  const handleMonkMode = () => {
-    emit("wall-activate");
+  const handleMonkModeToggle = () => {
+    emit("monk-mode-change", !isMonkMode);
   };
 
   return (
@@ -118,8 +119,11 @@ const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit, hookActiv
         <p><strong>Incubation</strong> suggests pausing. <strong>Stuck</strong> suggests moving.</p>
       </div>
 
-      <button className="monk-mode-button" onClick={handleMonkMode}>
-        Monk Mode — Force Break
+      <button
+        className={`monk-mode-button${isMonkMode ? ' active' : ''}`}
+        onClick={handleMonkModeToggle}
+      >
+        {isMonkMode ? 'Monk Mode: ON — Wall disabled' : 'Monk Mode: OFF'}
       </button>
 
       <button className="quit-button" onClick={onQuit}>

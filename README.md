@@ -409,13 +409,13 @@ This ensures exactly **one HMM forward step per second**, making the EMA time co
 
 ### Wall Unlock: Zen Timer (v2.7)
 
-The Wall is unlocked via a **smartphone-based Zen Timer**. When the Wall activates, an embedded HTTP server starts on a random port and the Overlay displays a QR code. Scanning with a smartphone opens a self-contained HTML page with a **2-minute countdown timer**. After 2 minutes, an "Unlock Wall" button appears. If no smartphone is available, the Wall auto-unlocks after **150 seconds** as a fallback.
+The Wall is unlocked via a **smartphone-based Zen Timer**. When the Wall activates, an embedded HTTP server starts on a random port and the Overlay displays a QR code. Scanning with a smartphone opens a self-contained HTML page with a **2-minute countdown timer**. After 2 minutes, an "Unlock Wall" button appears. A "Return to work" early-exit button is also available for immediate unlock. The PC Overlay displays a synchronized 120-second countdown and a **"Phone connected"** badge when the smartphone loads the page (`wall-phone-connected` event). If no smartphone is available, the Wall auto-unlocks after **120 seconds** as a fallback.
 
 This replaces the previous DeviceMotion shake detection, which required iOS permission grants and was unreliable across devices.
 
 ### Monk Mode (v2.7)
 
-The Dashboard includes a **"Monk Mode — Force Break"** button that manually activates the Wall via `emit("wall-activate")`, regardless of the current cognitive state. This allows users to proactively take a break.
+The Dashboard includes a **Monk Mode toggle**. When activated (ON), the Wall auto-intervention (Lv2) is **disabled** — `stuck > 0.70` will no longer trigger the full-screen block. The Nudge (Lv1 red vignette) remains active. The toggle emits `monk-mode-change` via Tauri events, ensuring both the main and overlay windows stay in sync.
 
 ### Keyboard Idle Detection (v2.7)
 

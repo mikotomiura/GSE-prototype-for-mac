@@ -27,6 +27,8 @@ function App() {
   // null = 初回確認中, true = フック有効, false = 権限未付与
   const [hookActive, setHookActive] = useState<boolean | null>(null);
   const [keyboardIdleMs, setKeyboardIdleMs] = useState(0);
+  // Monk Mode: true = Wall 自動介入を無効化
+  const [isMonkMode, setIsMonkMode] = useState(false);
 
   // D-1: getCurrentWindow() を useMemo でメモ化し不要な再生成を防止
   const currentWindow = useMemo(() => getCurrentWindow(), []);
@@ -60,9 +62,10 @@ function App() {
   // 3. Intervention Layer ロジック
   //    D-2: Lv1 (Nudge) は Overlay.tsx 側で stuck>0.6 時に即時表示済み
   //    D-3: Lv2 (Ambient Fade/Wall) は stuck>LV2_STUCK_THRESHOLD が LV2_TIMER_MS 継続で発動
+  //    Monk Mode ON 時は Wall を一切発動しない
   const wallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (cognitiveState.stuck > LV2_STUCK_THRESHOLD && !isWallActive) {
+    if (cognitiveState.stuck > LV2_STUCK_THRESHOLD && !isWallActive && !isMonkMode) {
       // タイマーが未設定の場合のみ新規作成（再レンダーでリセットしない）
       if (!wallTimerRef.current) {
         wallTimerRef.current = setTimeout(() => {
@@ -71,13 +74,13 @@ function App() {
         }, LV2_TIMER_MS);
       }
     } else {
-      // Stuck閾値を下回った or Wall発動済み → タイマーをクリア
+      // Stuck閾値を下回った or Wall発動済み or MonkMode ON → タイマーをクリア
       if (wallTimerRef.current) {
         clearTimeout(wallTimerRef.current);
         wallTimerRef.current = null;
       }
     }
-  }, [cognitiveState.stuck, isWallActive]);
+  }, [cognitiveState.stuck, isWallActive, isMonkMode]);
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -104,10 +107,10 @@ function App() {
     };
   }, [windowLabel, currentWindow]);
 
-  // 5. Monk Mode — wall-activate イベントリスナー
+  // 5. Monk Mode — 両ウィンドウ間で同期するため Tauri イベントを使用
   useEffect(() => {
-    const unlisten = listen("wall-activate", () => {
-      setIsWallActive(true);
+    const unlisten = listen<boolean>("monk-mode-change", (event) => {
+      setIsMonkMode(event.payload);
     });
 
     return () => {
@@ -136,6 +139,7 @@ function App() {
       onQuit={handleQuit}
       hookActive={hookActive}
       keyboardIdleMs={keyboardIdleMs}
+      isMonkMode={isMonkMode}
     />
   );
 }

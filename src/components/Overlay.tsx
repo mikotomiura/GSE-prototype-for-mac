@@ -1,6 +1,10 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+
+// PC・スマホ共通: Zen Timer 120秒
+const WALL_COUNTDOWN_SECONDS = 120;
 
 interface OverlayProps {
     stuckProb: number;
@@ -15,7 +19,8 @@ interface WallServerInfo {
 const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
     const [nudgeOpacity, setNudgeOpacity] = useState(0);
     const [qrSvg, setQrSvg] = useState<string | null>(null);
-    const [wallTimer, setWallTimer] = useState(150);
+    const [wallTimer, setWallTimer] = useState(WALL_COUNTDOWN_SECONDS);
+    const [phoneConnected, setPhoneConnected] = useState(false);
     const currentWindow = useMemo(() => getCurrentWindow(), []);
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -33,13 +38,22 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
         currentWindow.setIgnoreCursorEvents(!isWallActive);
     }, [isWallActive, currentWindow]);
 
+    // スマートフォン接続検知
+    useEffect(() => {
+        const unlisten = listen("wall-phone-connected", () => {
+            setPhoneConnected(true);
+        });
+        return () => { unlisten.then((f) => f()); };
+    }, []);
+
     // Wall サーバーライフサイクル管理
     useEffect(() => {
         if (!isWallActive) {
             // Wall 解除時: サーバー停止 + 状態リセット
             invoke("stop_wall_server").catch(console.error);
             setQrSvg(null);
-            setWallTimer(150);
+            setWallTimer(WALL_COUNTDOWN_SECONDS);
+            setPhoneConnected(false);
             if (timerRef.current) {
                 clearInterval(timerRef.current);
                 timerRef.current = null;
@@ -56,8 +70,8 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
                 console.error("Failed to start wall server:", err);
             });
 
-        // 150秒カウントダウン (フォールバック解除の視覚フィードバック)
-        setWallTimer(150);
+        // 120秒カウントダウン（スマホ Zen Timer と同期）
+        setWallTimer(WALL_COUNTDOWN_SECONDS);
         timerRef.current = setInterval(() => {
             setWallTimer((prev) => {
                 if (prev <= 1) {
@@ -87,6 +101,12 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
         }
     }, [stuckProb, isWallActive]);
 
+    const formatTimer = (secs: number) => {
+        const m = Math.floor(secs / 60);
+        const s = secs % 60;
+        return `${m}:${s < 10 ? '0' : ''}${s}`;
+    };
+
     return (
         <div className="overlay-root">
             {/* Nudge Layer (Red Vignette) */}
@@ -112,8 +132,14 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
                         <p className="qr-loading">Starting unlock server...</p>
                     )}
 
+                    {phoneConnected && (
+                        <div className="phone-connected-badge">
+                            Phone connected — Zen Timer running
+                        </div>
+                    )}
+
                     <div className="wall-timer">
-                        Auto-unlock in {wallTimer}s
+                        {formatTimer(wallTimer)}
                     </div>
                 </div>
             )}

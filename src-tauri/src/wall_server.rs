@@ -1,15 +1,15 @@
 // Smartphone-based Wall unlock via embedded HTTP server + QR code.
 //
 // When the Wall (Lv2 Stuck intervention) activates, an HTTP server starts on
-// a random port and serves a self-contained HTML page with DeviceMotion-based
-// shake/walk detection. The Overlay displays a QR code pointing to this page.
+// a random port and serves a self-contained Zen Timer page (2-minute countdown).
+// The Overlay displays a QR code pointing to this page.
 //
 // Flow:
 //   1. Overlay calls `start_wall_server` → server starts, returns QR SVG
-//   2. User scans QR → phone opens motion detection page
-//   3. Phone detects sufficient movement → POST /unlock?token=xxx
+//   2. User scans QR → phone opens Zen Timer page → server emits `wall-phone-connected`
+//   3. After 120 s countdown (or early exit), phone POSTs /unlock?token=xxx
 //   4. Server emits `sensor-accelerometer` / `"move"` → Wall dismissed
-//   5. 60-second auto-unlock fallback if phone unavailable
+//   5. 120-second auto-unlock fallback if phone unavailable (synced with phone timer)
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
@@ -110,7 +110,7 @@ fn server_loop<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) {
     let start = Instant::now();
-    let fallback_timeout = Duration::from_secs(150);
+    let fallback_timeout = Duration::from_secs(120);
 
     // Build the server URL for embedding in the HTML page
     let port = server
@@ -124,7 +124,7 @@ fn server_loop<R: Runtime>(
     loop {
         // 60-second auto-unlock fallback
         if start.elapsed() > fallback_timeout {
-            tracing::info!("WallServer: 150s timeout — auto-unlocking wall");
+            tracing::info!("WallServer: 120s timeout — auto-unlocking wall");
             let _ = app.emit("sensor-accelerometer", "move");
             break;
         }
@@ -157,13 +157,17 @@ fn dispatch_request<R: Runtime>(
 ) {
     let url = request.url().to_string();
 
-    // GET /shake?token=xxx — serve the motion detection HTML page
+    // GET /shake?token=xxx — serve the Zen Timer HTML page
     if url.starts_with("/shake") && extract_token(&url) == token {
         let html = build_shake_html(server_url, token);
         let header =
             Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap();
         let response = Response::from_string(html).with_header(header);
         let _ = request.respond(response);
+
+        // Notify PC frontend that a phone has connected
+        let _ = app.emit("wall-phone-connected", ());
+        tracing::info!("WallServer: smartphone connected (Zen Timer page served)");
     }
     // POST /unlock?token=xxx — unlock the wall
     else if url.starts_with("/unlock") && extract_token(&url) == token {
@@ -291,6 +295,9 @@ h1{font-size:1.5rem;margin-bottom:1rem;font-weight:600}
 .btn{padding:1rem 2.5rem;font-size:1.1rem;background:#4ade80;color:#0f172a;border:none;border-radius:12px;cursor:pointer;font-weight:700;transition:transform 0.1s;}
 .btn:active{transform:scale(0.95)}
 .btn.hidden{display:none}
+.btn-skip{padding:0.6rem 1.5rem;font-size:0.85rem;background:transparent;color:rgba(255,255,255,0.45);border:1px solid rgba(255,255,255,0.2);border-radius:8px;cursor:pointer;margin-top:1.5rem;transition:opacity 0.2s;}
+.btn-skip:active{opacity:0.7}
+.btn-skip.hidden{display:none}
 .status{font-size:1.1rem;color:#4ade80;font-weight:600;display:none}
 </style>
 </head>
@@ -299,6 +306,7 @@ h1{font-size:1.5rem;margin-bottom:1rem;font-weight:600}
 <p class="sub" id="msg">PCから離れて深呼吸してください。<br>2分後にロック解除ボタンが現れます。</p>
 <div class="timer-circle" id="circle"><span id="time">02:00</span></div>
 <button class="btn hidden" id="unlockBtn">Unlock Wall</button>
+<button class="btn-skip" id="skipBtn">仕事に戻る — Return to work</button>
 <p class="status" id="status">Unlocked! Return to your PC.</p>
 
 <script>
@@ -308,8 +316,10 @@ h1{font-size:1.5rem;margin-bottom:1rem;font-weight:600}
   var timeEl = document.getElementById('time');
   var circleEl = document.getElementById('circle');
   var btnEl = document.getElementById('unlockBtn');
+  var skipEl = document.getElementById('skipBtn');
   var msgEl = document.getElementById('msg');
   var statusEl = document.getElementById('status');
+  var unlocked = false;
 
   circleEl.classList.add('active');
 
@@ -326,14 +336,22 @@ h1{font-size:1.5rem;margin-bottom:1rem;font-weight:600}
       timeEl.textContent = '00:00';
       msgEl.innerHTML = '思考の整理はできましたか？<br>ボタンを押して再開してください。';
       btnEl.classList.remove('hidden');
+      skipEl.classList.add('hidden');
     }
   }, 1000);
 
-  btnEl.addEventListener('click', function(){
+  function doUnlock(){
+    if(unlocked) return;
+    unlocked = true;
     btnEl.classList.add('hidden');
+    skipEl.classList.add('hidden');
     statusEl.style.display = 'block';
+    clearInterval(timer);
     fetch(SERVER+'/unlock?token='+TOKEN,{method:'POST'});
-  });
+  }
+
+  btnEl.addEventListener('click', doUnlock);
+  skipEl.addEventListener('click', doUnlock);
 })();
 </script>
 </body>
