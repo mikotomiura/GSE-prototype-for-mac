@@ -126,8 +126,11 @@ impl CognitiveStateEngine {
                                0.99,
         ];
 
-        // 初期事前確率: バランス型で開始 (Flow偏重を排除)
-        let initial_probs = [0.5, 0.3, 0.2];
+        // 初期事前確率: Flow優勢で開始 (セッション開始直後のフリッカー防止)
+        // 最初の1-2秒はサイレンス観測(f1=2000)が流入し Incubation 方向に引っ張るが、
+        // Flow優勢の事前確率がこの過渡的ノイズを吸収する。
+        // HMM は実際の打鍵データで数秒以内に実態に収束する。
+        let initial_probs = [0.80, 0.15, 0.05];
 
         Self {
             transitions: Arc::new(transitions),
@@ -147,7 +150,7 @@ impl CognitiveStateEngine {
     /// HMM確率・EWMA・backspace_streakを初期値に戻す。
     /// セッション開始時に呼び出され、前回セッションの状態をリセットする。
     pub fn reset(&self) {
-        let initial_probs = [0.5, 0.3, 0.2];
+        let initial_probs = [0.80, 0.15, 0.05];
 
         match self.current_state_probs.lock() {
             Ok(mut p) => *p = initial_probs,
@@ -199,7 +202,7 @@ impl CognitiveStateEngine {
     pub fn register_keystroke(&self, vk_code: u32) {
         if vk_code == 0x08 {
             let new_streak = self.backspace_streak.fetch_add(1, Ordering::Relaxed) + 1;
-            if new_streak >= 5 {
+            if new_streak >= 8 {
                 self.has_pending_penalty.store(true, Ordering::Release);
             }
         } else {
@@ -287,8 +290,11 @@ impl CognitiveStateEngine {
             return;
         }
 
-        // F1がゼロの場合はデータ不足のためスキップ
-        if features.f1_flight_time_median <= 0.0 {
+        // F1がゼロ（データ不足）の場合はスキップ。
+        // ただし保留中のペナルティがある場合は処理を続行し、ペナルティビンを適用する。
+        if features.f1_flight_time_median <= 0.0
+            && !self.has_pending_penalty.load(Ordering::Acquire)
+        {
             return;
         }
 
