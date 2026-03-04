@@ -27,6 +27,10 @@ pub struct CognitiveStateEngine {
     current_state_probs: Arc<Mutex<[f64; 3]>>,
     pub is_paused: Arc<AtomicBool>,
     pub backspace_streak: Arc<AtomicU32>,
+    // ペナルティ保留フラグ: streak >= 5 に達した瞬間にtrueになり、
+    // update() で消費されるまで保持される。
+    // register_keystroke() で streak をリセットしてもペナルティは取りこぼさない。
+    has_pending_penalty: Arc<AtomicBool>,
 
     // 2-axis EWMA: (X = Friction, Y = Engagement)
     // α = 0.3: 新値30%、前値70%のブレンド
@@ -71,46 +75,51 @@ impl CognitiveStateEngine {
         // Stuck:      peaks at high Friction (x=3,4) × low Engagement (y=0,1)
         //
         // Penalty bin (obs=25): backspace_streak ≥ 5 → near-certain Stuck.
-        // Each state's non-penalty bins sum to ≈1.0; HMM normalizes anyway.
+        //
+        // 全ビンに最小値 0.01 を設定し、確率の完全消滅を防止。
+        // 旧実装の EMISSION_FLOOR (+0.05 一律加算) を廃止:
+        //   - 旧: ペナルティビン Stuck:Flow 比 = 1.04/0.05 = 20.8x（鈍い応答）
+        //   - 新: ペナルティビン Stuck:Flow 比 = 0.99/0.01 = 99x（鋭い応答）
+        // EWMA (α=0.3) とヒステリシス層 (α=0.25/0.50) が安定性を維持する。
         #[rustfmt::skip]
         let emissions: [f64; 78] = [
-            // ── Flow (State 0) ─────────────────────────── non-penalty sum ≈ 0.85
+            // ── Flow (State 0) ─────────────────────────── non-penalty sum ≈ 0.97
             //  x=0 (low F)    y: 0     1     2     3     4
                                0.01, 0.02, 0.05, 0.12, 0.14,
             //  x=1            y: 0     1     2     3     4
                                0.01, 0.02, 0.05, 0.12, 0.13,
             //  x=2            y: 0     1     2     3     4
-                               0.00, 0.01, 0.03, 0.06, 0.08,
+                               0.01, 0.01, 0.03, 0.06, 0.08,
             //  x=3            y: 0     1     2     3     4
-                               0.00, 0.00, 0.00, 0.00, 0.00,
+                               0.01, 0.01, 0.01, 0.01, 0.01,
             //  x=4 (high F)   y: 0     1     2     3     4
-                               0.00, 0.00, 0.00, 0.00, 0.00,
+                               0.01, 0.01, 0.01, 0.01, 0.01,
             //  penalty bin
-                               0.00,
+                               0.01,
 
-            // ── Incubation (State 1) ──────────────────── non-penalty sum ≈ 1.07
+            // ── Incubation (State 1) ──────────────────── non-penalty sum ≈ 1.12
             //  x=0 (low F)    y: 0     1     2     3     4
                                0.15, 0.10, 0.04, 0.03, 0.02,
             //  x=1            y: 0     1     2     3     4
                                0.14, 0.10, 0.04, 0.03, 0.02,
             //  x=2            y: 0     1     2     3     4
-                               0.10, 0.08, 0.03, 0.01, 0.00,
+                               0.10, 0.08, 0.03, 0.01, 0.01,
             //  x=3            y: 0     1     2     3     4
-                               0.05, 0.04, 0.01, 0.00, 0.00,
+                               0.05, 0.04, 0.01, 0.01, 0.01,
             //  x=4 (high F)   y: 0     1     2     3     4
-                               0.04, 0.03, 0.01, 0.00, 0.00,
+                               0.04, 0.03, 0.01, 0.01, 0.01,
             //  penalty bin
                                0.01,
 
-            // ── Stuck (State 2) ───────────────── non-penalty sum = 1.00 (+0.99)
+            // ── Stuck (State 2) ─────────────────────────
             //  x=0 (low F)    y: 0     1     2     3     4
-                               0.00, 0.00, 0.00, 0.00, 0.00,
+                               0.01, 0.01, 0.01, 0.01, 0.01,
             //  x=1            y: 0     1     2     3     4
-                               0.00, 0.00, 0.00, 0.00, 0.00,
+                               0.01, 0.01, 0.01, 0.01, 0.01,
             //  x=2            y: 0     1     2     3     4
-                               0.02, 0.04, 0.02, 0.00, 0.00,
+                               0.02, 0.04, 0.02, 0.01, 0.01,
             //  x=3            y: 0     1     2     3     4
-                               0.10, 0.16, 0.07, 0.02, 0.00,
+                               0.10, 0.16, 0.07, 0.02, 0.01,
             //  x=4 (high F)   y: 0     1     2     3     4
                                0.16, 0.22, 0.12, 0.05, 0.02,
             //  penalty bin  (backspace streak ≥5 → near-certain Stuck)
@@ -126,6 +135,7 @@ impl CognitiveStateEngine {
             current_state_probs: Arc::new(Mutex::new(initial_probs)),
             is_paused: Arc::new(AtomicBool::new(false)),
             backspace_streak: Arc::new(AtomicU32::new(0)),
+            has_pending_penalty: Arc::new(AtomicBool::new(false)),
             // (0.3, 0.5) = 中立領域で初期化 (obs=7; Flow/Inc/Stuck がほぼ均等な観測ビン)
             // (0.0, 1.0) で開始すると初回更新で p_flow=1.0 に固定されるため変更
             axes_ewma: Arc::new(Mutex::new((0.3, 0.5))),
@@ -152,6 +162,7 @@ impl CognitiveStateEngine {
             Err(poisoned) => *poisoned.into_inner() = (0.3, 0.5),
         }
         self.backspace_streak.store(0, Ordering::Relaxed);
+        self.has_pending_penalty.store(false, Ordering::Release);
         self.is_paused.store(false, Ordering::Release);
     }
 
@@ -181,9 +192,16 @@ impl CognitiveStateEngine {
 
     /// 全キー押下時に呼び出し、Backspaceストリークをリアルタイムでカウントする。
     /// 1Hz gate の外側（全打鍵）で呼ぶことで、高速Backspace連打を正確に検知する。
+    ///
+    /// streak >= 5 に達した時点で has_pending_penalty フラグを立てる。
+    /// 非BSキーで streak がリセットされても、フラグは update() で消費されるまで保持される。
+    /// これにより「BS×6 → 即Enter」のようなケースでもペナルティを取りこぼさない。
     pub fn register_keystroke(&self, vk_code: u32) {
         if vk_code == 0x08 {
-            self.backspace_streak.fetch_add(1, Ordering::Relaxed);
+            let new_streak = self.backspace_streak.fetch_add(1, Ordering::Relaxed) + 1;
+            if new_streak >= 5 {
+                self.has_pending_penalty.store(true, Ordering::Release);
+            }
         } else {
             self.backspace_streak.store(0, Ordering::Relaxed);
         }
@@ -275,13 +293,11 @@ impl CognitiveStateEngine {
         }
 
         // --- Backspace Streak Logic ---
-        // register_keystroke() が全打鍵でカウントを更新済み。
-        // ここでは現在値を読み取り、ペナルティ適用後にリセットするのみ。
-        let streak = self.backspace_streak.load(Ordering::Relaxed);
-        let apply_backspace_penalty = streak >= 5;
-        if apply_backspace_penalty {
-            self.backspace_streak.store(0, Ordering::Relaxed); // ペナルティ適用後リセット: Stuck張り付き防止
-        }
+        // register_keystroke() が streak >= 5 到達時に has_pending_penalty を true に設定済み。
+        // ここではフラグを消費（swap false）し、ペナルティビン（obs=25）を適用する。
+        // streak のリセットは register_keystroke 側で非BSキー入力時に行われるため、
+        // ここでは streak をリセットしない（二重リセット防止）。
+        let apply_backspace_penalty = self.has_pending_penalty.swap(false, Ordering::AcqRel);
 
         let (raw_x, raw_y) = self.calculate_latent_axes(features, ime_open);
 
@@ -323,11 +339,8 @@ impl CognitiveStateEngine {
         let n_states = 3;
 
         // Forward Algorithm Step
-        // ε-floor: 放射確率の最小値を保証し、単一観測で状態確率が完全に0になることを防ぐ。
-        // 0.05 (旧: 0.04) に引き上げることでFlow Gravityをさらに緩和する。
-        // 最大 p ≈ 0.85–0.89 程度に収まり、状態間の確率変化が滑らかになる。
-        const EMISSION_FLOOR: f64 = 0.05;
-
+        // 放射確率は emission テーブルに最小値 0.01 を組み込み済み。
+        // 旧 EMISSION_FLOOR (+0.05 一律加算) は廃止。
         let mut sum_prob = 0.0;
 
         for j in 0..n_states {
@@ -338,7 +351,7 @@ impl CognitiveStateEngine {
             }
 
             // 3 states × 26 bins: index = j * 26 + obs
-            let e_prob = self.emissions[j * 26 + obs] + EMISSION_FLOOR;
+            let e_prob = self.emissions[j * 26 + obs];
             new_probs[j] = trans_sum * e_prob;
             sum_prob += new_probs[j];
         }

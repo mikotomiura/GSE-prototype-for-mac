@@ -43,8 +43,9 @@ function App() {
       .catch(() => setHookActive(true)); // エラー時は楽観的に true
   }, []);
 
-  // 2. Poll Cognitive State (Every 500ms) + Keyboard Idle
+  // 2. Poll Cognitive State (Every 500ms) + Keyboard Idle + Lv2 Wall累積
   //    オーバーレイは常時ポーリング、メインウィンドウは isStarted 依存
+  //    Wall累積ロジックもここで実行（500ms間隔が保証されるため）
   useEffect(() => {
     if (windowLabel !== "overlay" && !isStarted) return;
 
@@ -56,6 +57,23 @@ function App() {
         ]);
         setCognitiveState(state);
         setKeyboardIdleMs(idle);
+
+        // Lv2 Wall 累積カウンター（ヒステリシスバンド付き）
+        if (!isWallActiveRef.current && !isMonkModeRef.current) {
+          if (state.stuck > LV2_STUCK_THRESHOLD) {
+            stuckAccMsRef.current += 500;
+            if (stuckAccMsRef.current >= LV2_TIMER_MS) {
+              setIsWallActive(true);
+              stuckAccMsRef.current = 0;
+            }
+          } else if (state.stuck < 0.5) {
+            // 明確な回復: 累積リセット
+            stuckAccMsRef.current = 0;
+          }
+          // else: 0.5 ≤ stuck ≤ 0.7 → 累積一時停止（遊び）
+        } else {
+          stuckAccMsRef.current = 0;
+        }
       } catch (e) {
         console.error("Failed to fetch state:", e);
       }
@@ -66,34 +84,20 @@ function App() {
 
   // 3. Intervention Layer ロジック
   //    D-2: Lv1 (Nudge) は Overlay.tsx 側で stuck>0.6 時に即時表示済み
-  //    D-3: Lv2 (Ambient Fade/Wall) は stuck>LV2_STUCK_THRESHOLD が LV2_TIMER_MS 継続で発動
+  //    D-3: Lv2 (Ambient Fade/Wall) は stuck>LV2_STUCK_THRESHOLD の累積時間が LV2_TIMER_MS に達したら発動
   //    Monk Mode ON 時は Wall を一切発動しない
-  const wallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (cognitiveState.stuck > LV2_STUCK_THRESHOLD && !isWallActive && !isMonkMode) {
-      // タイマーが未設定の場合のみ新規作成（再レンダーでリセットしない）
-      if (!wallTimerRef.current) {
-        wallTimerRef.current = setTimeout(() => {
-          wallTimerRef.current = null;
-          setIsWallActive(true);
-        }, LV2_TIMER_MS);
-      }
-    } else {
-      // Stuck閾値を下回った or Wall発動済み or MonkMode ON → タイマーをクリア
-      if (wallTimerRef.current) {
-        clearTimeout(wallTimerRef.current);
-        wallTimerRef.current = null;
-      }
-    }
-  }, [cognitiveState.stuck, isWallActive, isMonkMode]);
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (wallTimerRef.current) {
-        clearTimeout(wallTimerRef.current);
-      }
-    };
-  }, []);
+  //
+  //    【改善】旧実装の setTimeout は一瞬の stuck 低下でリセットされていた。
+  //    新実装: 累積カウンター + ヒステリシスバンド。
+  //      - stuck > 0.7 → 累積 +500ms
+  //      - 0.5 ≤ stuck ≤ 0.7 → 累積を一時停止（リセットしない = 遊び/スラック）
+  //      - stuck < 0.5 → 累積リセット（明確な回復）
+  //    ポーリング間隔(500ms)ごとに評価するため、ref 経由で最新値を参照する。
+  const stuckAccMsRef = useRef(0);
+  const isWallActiveRef = useRef(isWallActive);
+  const isMonkModeRef = useRef(isMonkMode);
+  useEffect(() => { isWallActiveRef.current = isWallActive; }, [isWallActive]);
+  useEffect(() => { isMonkModeRef.current = isMonkMode; }, [isMonkMode]);
 
   // 4. Sensor Integration (Unlock Logic) + メインウィンドウへのフォーカス復帰
   useEffect(() => {
