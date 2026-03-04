@@ -20,9 +20,10 @@
 9. [IME Mode Detection on macOS: TIS + JIS Key Architecture](#ime-mode-detection-on-macos-tis--jis-key-architecture)
 10. [1Hz Timer-Driven Inference & Synthetic Friction (v2.4)](#1hz-timer-driven-inference--synthetic-friction-v24)
 11. [Intervention UI: Nudge & Wall (v2.5)](#intervention-ui-nudge--wall-v25)
-12. [Logging & Analysis](#logging--analysis)
-13. [Build Instructions](#build-instructions)
-14. [Academic References](#academic-references)
+12. [HMM Tuning & Stability (v2.9)](#hmm-tuning--stability-v29)
+13. [Logging & Analysis](#logging--analysis)
+14. [Build Instructions](#build-instructions)
+15. [Academic References](#academic-references)
 
 ---
 
@@ -204,7 +205,7 @@ ewma_t = 0.30 · raw_t + 0.70 · ewma_{t−1}
 
 ### Observation Bins
 
-(X, Y) ∈ [0,1]² is discretized into a 5×5 grid (25 bins) plus one penalty bin (obs = 25, triggered by ≥ 5 consecutive Backspace presses):
+(X, Y) ∈ [0,1]² is discretized into a 5×5 grid (25 bins) plus one penalty bin (obs = 25, triggered by ≥ 8 consecutive Backspace presses):
 
 ```
 Cognitive Friction X →  0(low)   1      2      3      4(high)
@@ -221,19 +222,18 @@ Productive Silence Y ↓
 At each update, the belief vector **π** = [p_Flow, p_Inc, p_Stuck] is propagated by a single Forward Algorithm step:
 
 ```
-π'_j = ( Σ_i  π_i · A[i,j] ) · ( B[j, obs] + ε )    for j ∈ {0, 1, 2}
-π'   ← π' / Σ_j π'_j                                  (normalize to sum = 1)
+π'_j = ( Σ_i  π_i · A[i,j] ) · B[j, obs]    for j ∈ {0, 1, 2}
+π'   ← π' / Σ_j π'_j                         (normalize to sum = 1)
 ```
 
 - **A** = 3×3 transition matrix (rows = from, cols = to)
-- **B** = 3×26 emission matrix (state × observation bin)
-- **ε** = 0.04 (emission floor)
+- **B** = 3×26 emission matrix (state × observation bin); all entries have a baked-in minimum of 0.01 to prevent probability collapse
 
 ### Transition Matrix A
 
 | From \ To | Flow | Incubation | Stuck |
 |---|---|---|---|
-| **Flow** | 0.80 | 0.13 | 0.07 |
+| **Flow** | 0.75 | 0.17 | 0.08 |
 | **Incubation** | 0.12 | 0.80 | 0.08 |
 | **Stuck** | 0.06 | 0.18 | 0.76 |
 
@@ -250,13 +250,13 @@ At each update, the belief vector **π** = [p_Flow, p_Inc, p_Stuck] is propagate
 ```
 display_t = α · raw_t + (1 − α) · display_{t−1}
 
-α = 0.25  (normal updates → time-constant τ ≈ 4 s)
-α = 0.50  (backspace-penalty bin → rapid Stuck onset)
+α = 0.40  (normal updates → time-constant τ ≈ 2.5 s)
+α = 0.60  (backspace-penalty bin → rapid Stuck onset)
 ```
 
 ### Fix ②: Probability Discrete Clustering
 
-**Fix:** Emission floor raised from 0.01 to **0.04**, adding equal additive smoothing to all state likelihoods. Maximum attainable probability per state saturates near 0.88–0.90.
+**Fix:** All emission table entries have a baked-in minimum of **0.01** (no runtime additive floor). The penalty bin (obs=25) achieves a Stuck:Flow emission ratio of ~99×, providing strong Stuck signal without artificial ceiling effects.
 
 ### Fix ③: Inc → Stuck Silence Transition
 
@@ -405,7 +405,7 @@ This ensures exactly **one HMM forward step per second**, making the EMA time co
 | Level | Name | Trigger | Visual Effect | User Interaction |
 | --- | --- | --- | --- | --- |
 | **Lv1** | Nudge | p_stuck > 0.60 | Red vignette (mist) around screen edges | Click-through (transparent to input) |
-| **Lv2** | Wall | p_stuck > 0.70 for 30 s | Full-screen blocking overlay with message | Blocks all input until unlocked |
+| **Lv2** | Wall | p_stuck > 0.70 cumulative 30 s (with hysteresis) | Full-screen blocking overlay with message | Blocks all input until unlocked |
 
 ### Wall Unlock: Zen Timer (v2.7)
 
@@ -428,9 +428,45 @@ On launch, a **start screen** is displayed with the "Generative Struggle Engine"
 
 The overlay window continues to poll cognitive state regardless of the start screen state.
 
+### Wall Trigger: Cumulative Counter with Hysteresis (v2.9)
+
+The Lv2 Wall uses a **cumulative millisecond counter** with a hysteresis band instead of a simple duration check:
+
+- **p_stuck > 0.70**: Accumulate elapsed time toward 30 s threshold
+- **0.50 ≤ p_stuck ≤ 0.70**: Pause accumulation (slack band — no increment or decay)
+- **p_stuck < 0.50**: Decay accumulation at **2× speed** (clear recovery signal)
+
+This prevents premature Wall activation from brief stuck oscillations around the threshold, while still triggering on sustained stuck states. The counter uses `Date.now()` for precise elapsed-time measurement independent of JavaScript timer drift.
+
 ### Keyboard Idle Detection (v2.7)
 
 A `LAST_KEYSTROKE_TIMESTAMP` atomic tracks the most recent keypress. The `get_keyboard_idle_ms` IPC command returns milliseconds since the last keystroke. The Dashboard displays real-time session elapsed time and keyboard activity status (Active / Idle).
+
+---
+
+## HMM Tuning & Stability (v2.9)
+
+### Backspace Penalty Race Condition Fix
+
+**Problem:** When a fast typist presses `BS×6 → Enter`, the non-BS key resets `backspace_streak` to 0 before the 1 Hz analysis thread can read it — the penalty is lost.
+
+**Fix:** A one-shot `has_pending_penalty: Arc<AtomicBool>` flag is set at the moment `backspace_streak >= 8`. The flag persists until the next `engine.update()` consumes it via `atomic swap(false)`, decoupling detection from the 1 Hz timer gate.
+
+### Emission Floor Removal
+
+The runtime additive emission floor (`EMISSION_FLOOR = 0.05`, applied as `B[j,obs] + ε`) was replaced with **baked-in minimums of 0.01** in the emission table itself. This sharpens the penalty bin Stuck:Flow ratio from ~20× to ~99×, giving the HMM stronger signal on backspace streaks while maintaining non-zero probability for all state-observation pairs.
+
+### Initial Probability Optimization
+
+Initial HMM probabilities changed from `[0.50, 0.30, 0.20]` to **`[0.80, 0.15, 0.05]`**, matching the expected steady-state for a typical session start (typing begins in Flow). The EWMA initial position was also aligned to `(0.1, 0.8)` (low Friction, high Engagement = Flow region). This eliminates the 3–5 second "warm-up flicker" at session start where probabilities oscillated before converging.
+
+### Display Hysteresis Alpha Increase
+
+Display EMA alpha increased from `0.25/0.50` to **`0.40/0.60`** to compensate for sharper emissions after emission floor removal. The higher alpha allows the display layer to track genuine state changes more responsively while still preventing single-step spikes.
+
+### Transition Matrix: Flow Self-Loop Reduction
+
+Flow→Flow reduced from 0.80 to **0.75** (escape time 4 s → 4 s), with probability mass redistributed to Flow→Incubation (0.13 → 0.17) and Flow→Stuck (0.07 → 0.08). This mitigates "Flow Gravity" — the tendency for the HMM to remain locked in Flow state even when features shift.
 
 ---
 

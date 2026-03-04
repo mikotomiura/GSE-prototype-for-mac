@@ -27,7 +27,7 @@ pub struct CognitiveStateEngine {
     current_state_probs: Arc<Mutex<[f64; 3]>>,
     pub is_paused: Arc<AtomicBool>,
     pub backspace_streak: Arc<AtomicU32>,
-    // ペナルティ保留フラグ: streak >= 5 に達した瞬間にtrueになり、
+    // ペナルティ保留フラグ: streak >= 8 に達した瞬間にtrueになり、
     // update() で消費されるまで保持される。
     // register_keystroke() で streak をリセットしてもペナルティは取りこぼさない。
     has_pending_penalty: Arc<AtomicBool>,
@@ -74,7 +74,7 @@ impl CognitiveStateEngine {
         // Incubation: peaks at low-mid Friction (x=0,1,2) × low Engagement (y=0,1)
         // Stuck:      peaks at high Friction (x=3,4) × low Engagement (y=0,1)
         //
-        // Penalty bin (obs=25): backspace_streak ≥ 5 → near-certain Stuck.
+        // Penalty bin (obs=25): backspace_streak ≥ 8 → near-certain Stuck.
         //
         // 全ビンに最小値 0.01 を設定し、確率の完全消滅を防止。
         // 旧実装の EMISSION_FLOOR (+0.05 一律加算) を廃止:
@@ -197,7 +197,7 @@ impl CognitiveStateEngine {
     /// 全キー押下時に呼び出し、Backspaceストリークをリアルタイムでカウントする。
     /// 1Hz gate の外側（全打鍵）で呼ぶことで、高速Backspace連打を正確に検知する。
     ///
-    /// streak >= 5 に達した時点で has_pending_penalty フラグを立てる。
+    /// streak >= 8 に達した時点で has_pending_penalty フラグを立てる。
     /// 非BSキーで streak がリセットされても、フラグは update() で消費されるまで保持される。
     /// これにより「BS×6 → 即Enter」のようなケースでもペナルティを取りこぼさない。
     pub fn register_keystroke(&self, vk_code: u32) {
@@ -300,7 +300,7 @@ impl CognitiveStateEngine {
         }
 
         // --- Backspace Streak Logic ---
-        // register_keystroke() が streak >= 5 到達時に has_pending_penalty を true に設定済み。
+        // register_keystroke() が streak >= 8 到達時に has_pending_penalty を true に設定済み。
         // ここではフラグを消費（swap false）し、ペナルティビン（obs=25）を適用する。
         // streak のリセットは register_keystroke 側で非BSキー入力時に行われるため、
         // ここでは streak をリセットしない（二重リセット防止）。
