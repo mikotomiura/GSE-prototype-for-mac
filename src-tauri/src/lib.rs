@@ -26,6 +26,13 @@ use tauri::{Manager, State};
 struct ResetSignal(Arc<AtomicBool>);
 
 // ---------------------------------------------------------------------------
+// セッション開始フラグ (start_session で true にセット)
+// false の間、分析スレッドはイベントをドレインするが処理しない
+// ---------------------------------------------------------------------------
+
+struct SessionActive(Arc<AtomicBool>);
+
+// ---------------------------------------------------------------------------
 // ログ状態 (quit_app からも参照できるよう Tauri state で管理)
 // ---------------------------------------------------------------------------
 
@@ -117,6 +124,7 @@ fn stop_wall_server(wall: State<WallServerState>) {
 fn start_session(
     engine: State<CognitiveStateEngine>,
     reset: State<ResetSignal>,
+    active: State<SessionActive>,
     log: State<Arc<Mutex<LogState>>>,
 ) {
     // 1. HMM を初期値にリセット
@@ -125,7 +133,10 @@ fn start_session(
     // 2. 分析スレッドへリセットシグナルを送信
     reset.0.store(true, Ordering::Release);
 
-    // 3. セッション開始マーカーをログに記録
+    // 3. セッションをアクティブにする（分析スレッドの処理を開始）
+    active.0.store(true, Ordering::Release);
+
+    // 4. セッション開始マーカーをログに記録
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -280,6 +291,11 @@ pub fn run() {
     let reset_signal_for_thread = reset_signal.clone();
     let reset_state = ResetSignal(reset_signal);
 
+    // セッション開始フラグ (false = スタート画面中、true = セッション中)
+    let session_active = Arc::new(AtomicBool::new(false));
+    let session_active_for_thread = session_active.clone();
+    let session_active_state = SessionActive(session_active);
+
     // 分析スレッド
     // イベント駆動 (rx.recv) の代わりに recv_timeout を使い、
     // 無入力期間中もタイマーでHMMを継続更新する。
@@ -312,6 +328,11 @@ pub fn run() {
 
             match rx.recv_timeout(Duration::from_millis(1000)) {
                 Ok(event) => {
+                    // セッション未開始 — イベントをドレイン（チャネル詰まり防止）するが処理しない
+                    if !session_active_for_thread.load(Ordering::Acquire) {
+                        continue;
+                    }
+
                     if engine_for_thread.get_paused() {
                         continue;
                     }
@@ -375,6 +396,10 @@ pub fn run() {
                 }
 
                 Err(RecvTimeoutError::Timeout) => {
+                    // セッション未開始 — サイレンス処理もスキップ
+                    if !session_active_for_thread.load(Ordering::Acquire) {
+                        continue;
+                    }
                     // 無入力期間の検出: サイレンス特徴量でHMMを更新する。
                     // recv_timeout(1000ms) のタイムアウトにより自然に ~1Hz となる。
                     if engine_for_thread.get_paused() {
@@ -495,6 +520,7 @@ pub fn run() {
         .manage(log_state)
         .manage(wall_state)
         .manage(reset_state)
+        .manage(session_active_state)
         .invoke_handler(tauri::generate_handler![
             get_cognitive_state,
             get_keyboard_idle_ms,
