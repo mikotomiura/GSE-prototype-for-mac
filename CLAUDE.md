@@ -46,22 +46,22 @@ All inter-thread communication uses `crossbeam` bounded channels. Shared state u
 
 ### Rust Backend (`src-tauri/src/`)
 
-- **`lib.rs`** — Tauri setup, thread orchestration, 6 IPC commands (`get_cognitive_state`, `get_hook_status`, `start_wall_server`, `stop_wall_server`, `get_session_file`, `quit_app`)
-- **`analysis/engine.rs`** — HMM engine: 3 states × 26 observation bins (25 natural + 1 backspace penalty), dual semantic latent axes (Friction, Engagement), EWMA smoothing (α=0.3), hysteresis display layer (α=0.25/0.50)
+- **`lib.rs`** — Tauri setup, thread orchestration, 8 IPC commands (`get_cognitive_state`, `get_keyboard_idle_ms`, `get_hook_status`, `start_wall_server`, `stop_wall_server`, `get_session_file`, `start_session`, `quit_app`)
+- **`analysis/engine.rs`** — HMM engine: 3 states × 26 observation bins (25 natural + 1 backspace penalty), dual semantic latent axes (Friction, Engagement), EWMA smoothing (α=0.3), hysteresis display layer (α=0.40/0.60)
 - **`analysis/features.rs`** — F1-F6 feature extraction over 30-second sliding window, `phi(x, beta)` normalization (κ=2.0), `make_silence_observation()` for idle periods
 - **`input/hook.rs`** — Shared atomics (`IME_OPEN`, `IME_ACTIVE`, `IME_COMPOSING`, `HOOK_ACTIVE`, `EVENT_SENDER`). Uses `#[path = "hook_macos.rs"]` for platform dispatch
 - **`input/hook_macos.rs`** — CGEventTap implementation, macOS VK→Windows VK mapping (~60 codes), Input Monitoring permission flow, **IME composition state machine** (tracks COMPOSING→CANDIDATING transitions via keystroke patterns)
 - **`input/ime.rs`** — `ImeMonitor` reads `IME_ACTIVE` from hook state machine + `spawn_ime_open_polling_thread()` with JIS key vs ANSI keyboard detection paths
 - **`input/ime_macos.rs`** — TIS Carbon FFI via `dispatch_sync_f` to main GCD queue
 - **`logger.rs`** — NDJSON session logger to `~/Documents/GSE-sessions/`, auto-flush on 5s idle
-- **`wall_server.rs`** — Embedded HTTP server (tiny_http) + QR code for smartphone-based Wall unlock with DeviceMotion shake detection
+- **`wall_server.rs`** — Embedded HTTP server (tiny_http) + QR code for smartphone-based Zen Timer (2-min countdown → unlock button)
 - **`sensors.rs`** / **`sensors_macos.rs`** — Stub dispatcher
 
 ### Frontend (`src/`)
 
 - **`App.tsx`** — Polls `get_cognitive_state` every 500ms, intervention state machine (Lv1 Nudge at stuck>0.60, Lv2 Wall at stuck>0.70 for 30s continuous)
 - **`components/Dashboard.tsx`** — State probability bars, hook status banner, quit button
-- **`components/Overlay.tsx`** — Transparent always-on-top window: red vignette nudge (mix-blend-mode: hard-light) + full-screen Wall with QR code and 60s countdown
+- **`components/Overlay.tsx`** — Transparent always-on-top window: red vignette nudge (mix-blend-mode: hard-light) + full-screen Wall with QR code (smartphone unlock only, no PC-side auto-unlock)
 
 Two Tauri windows: `main` (Dashboard) and `overlay` (transparent, always-on-top, click-through when nudge / blocking when wall).
 
@@ -69,9 +69,9 @@ Two Tauri windows: `main` (Dashboard) and `overlay` (transparent, always-on-top,
 
 - Engine is 1Hz-calibrated: `engine.update()` must be called at most once per second
 - All VK codes are normalized to Windows equivalents internally (macOS CGKeyCode → Windows VK in `macos_vk_to_vk()`)
-- Backspace streak ≥ 5 triggers penalty bin (obs=25) with separate hysteresis alpha (0.50)
+- Backspace streak ≥ 8 triggers penalty bin (obs=25) with separate hysteresis alpha (0.60)
 - Dual baseline: `beta_coding` (IME off) vs `beta_writing` (IME on) with different reference values
-- Emission floor: 0.05 (prevents Flow gravity)
+- Emission table entries have baked-in minimum of 0.01 (no runtime additive floor)
 - `force_flow_state()` resets to Flow when IME candidate window is active
 
 ## Critical Constraints
@@ -93,6 +93,6 @@ Scopes: `wall`, `macos/ime`, `overlay`, `features`, `build`, `ui`, `sensors`
 ## macOS Limitations (vs planned Windows)
 
 - `IME_ACTIVE` (candidate window detection) uses keystroke state machine in CGEventTap callback — detects Space during composition as candidate trigger, Enter/Escape as reset. No extra permissions needed. Heuristic: may briefly misdetect if user presses Space for non-conversion purposes while IME_OPEN
-- Accelerometer stubbed → Wall requires QR/smartphone unlock or 60s timeout
+- Accelerometer stubbed → Wall requires QR/smartphone Zen Timer unlock (no PC-side auto-unlock)
 - First run requires Input Monitoring permission grant + app restart
 - No Windows source files exist yet (`windows_impl.rs`, `windows_ime.rs`, `sensors_windows.rs` are planned)
