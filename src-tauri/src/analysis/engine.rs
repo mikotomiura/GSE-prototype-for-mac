@@ -134,6 +134,27 @@ impl CognitiveStateEngine {
         }
     }
 
+    /// HMM確率・EWMA・backspace_streakを初期値に戻す。
+    /// セッション開始時に呼び出され、前回セッションの状態をリセットする。
+    pub fn reset(&self) {
+        let initial_probs = [0.5, 0.3, 0.2];
+
+        match self.current_state_probs.lock() {
+            Ok(mut p) => *p = initial_probs,
+            Err(poisoned) => *poisoned.into_inner() = initial_probs,
+        }
+        match self.display_probs.lock() {
+            Ok(mut p) => *p = initial_probs,
+            Err(poisoned) => *poisoned.into_inner() = initial_probs,
+        }
+        match self.axes_ewma.lock() {
+            Ok(mut e) => *e = (0.3, 0.5),
+            Err(poisoned) => *poisoned.into_inner() = (0.3, 0.5),
+        }
+        self.backspace_streak.store(0, Ordering::Relaxed);
+        self.is_paused.store(false, Ordering::Release);
+    }
+
     pub fn set_paused(&self, paused: bool) {
         self.is_paused.store(paused, Ordering::Release);
     }

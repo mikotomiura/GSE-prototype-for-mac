@@ -29,6 +29,8 @@ function App() {
   const [keyboardIdleMs, setKeyboardIdleMs] = useState(0);
   // Monk Mode: true = Wall 自動介入を無効化
   const [isMonkMode, setIsMonkMode] = useState(false);
+  // セッション開始状態: false = スタート画面, true = ダッシュボード
+  const [isStarted, setIsStarted] = useState(false);
 
   // D-1: getCurrentWindow() を useMemo でメモ化し不要な再生成を防止
   const currentWindow = useMemo(() => getCurrentWindow(), []);
@@ -42,7 +44,10 @@ function App() {
   }, []);
 
   // 2. Poll Cognitive State (Every 500ms) + Keyboard Idle
+  //    オーバーレイは常時ポーリング、メインウィンドウは isStarted 依存
   useEffect(() => {
+    if (windowLabel !== "overlay" && !isStarted) return;
+
     const interval = setInterval(async () => {
       try {
         const [state, idle] = await Promise.all([
@@ -57,7 +62,7 @@ function App() {
     }, 500);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [isStarted, windowLabel]);
 
   // 3. Intervention Layer ロジック
   //    D-2: Lv1 (Nudge) は Overlay.tsx 側で stuck>0.6 時に即時表示済み
@@ -129,9 +134,33 @@ function App() {
     );
   }
 
+  const handleStart = async () => {
+    try {
+      await invoke("start_session");
+      setIsStarted(true);
+    } catch (e) {
+      console.error("Failed to start session:", e);
+    }
+  };
+
   const handleQuit = () => {
     invoke("quit_app").catch(console.error);
   };
+
+  // スタート画面: セッション未開始時
+  if (!isStarted) {
+    return (
+      <div className="start-screen">
+        <h1>Generative Struggle Engine</h1>
+        <button className="start-button" onClick={handleStart}>
+          開始する
+        </button>
+        <p className="start-hint">
+          キーストローク動態から認知状態を推定します
+        </p>
+      </div>
+    );
+  }
 
   // Default to Main Dashboard
   return (

@@ -35,6 +35,10 @@ pub enum LogEntry {
         timestamp: u64,
         on: bool,
     },
+    /// セッション開始マーカー (start_session コマンドから)
+    SessionStart {
+        timestamp: u64,
+    },
     /// セッション終了マーカー
     End,
 }
@@ -126,6 +130,13 @@ impl SessionLogger {
                                     writer,
                                     r#"{{"type":"ime_state","t":{},"on":{}}}"#,
                                     timestamp, on,
+                                );
+                            }
+                            LogEntry::SessionStart { timestamp } => {
+                                let _ = writeln!(
+                                    writer,
+                                    r#"{{"type":"session_start","t":{}}}"#,
+                                    timestamp,
                                 );
                             }
                             LogEntry::End => {

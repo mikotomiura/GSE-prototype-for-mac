@@ -125,7 +125,7 @@ GSE-prototype/
 │   ├── components/
 │   │   ├── Dashboard.tsx        # State probability bars + session info
 │   │   └── Overlay.tsx          # Nudge (red mist) + Wall (full-screen block)
-│   ├── App.tsx                  # Intervention state machine (Lv1 → Lv2 escalation)
+│   ├── App.tsx                  # Start screen + intervention state machine (Lv1 → Lv2 escalation)
 │   └── main.tsx
 │
 ├── src-tauri/                   # Rust / Tauri 2.0 backend
@@ -142,7 +142,7 @@ GSE-prototype/
 │   │   │   ├── ime.rs           # ImeMonitor (reads IME_ACTIVE) + IME open polling thread
 │   │   │   ├── ime_macos.rs     # TIS Carbon FFI (dispatch_sync_f to main queue)
 │   │   │   └── mod.rs
-│   │   ├── lib.rs               # Tauri setup, thread orchestration, IPC commands
+│   │   ├── lib.rs               # Tauri setup, thread orchestration, IPC commands (incl. start_session)
 │   │   ├── logger.rs            # Async NDJSON session logger
 │   │   ├── main.rs
 │   │   ├── sensors.rs           # Sensor dispatcher (macOS stub)
@@ -417,6 +417,17 @@ This replaces the previous DeviceMotion shake detection, which required iOS perm
 
 The Dashboard includes a **Monk Mode toggle**. When activated (ON), the Wall auto-intervention (Lv2) is **disabled** — `stuck > 0.70` will no longer trigger the full-screen block. The Nudge (Lv1 red vignette) remains active. The toggle emits `monk-mode-change` via Tauri events, ensuring both the main and overlay windows stay in sync.
 
+### Session Start Screen (v2.8)
+
+On launch, a **start screen** is displayed with the "Generative Struggle Engine" title and a "開始する" (Start) button. The keyboard hook and analysis threads are already running in the background but idle. When the user clicks the start button:
+
+1. `start_session` IPC command resets the `CognitiveStateEngine` (HMM probabilities, EWMA, backspace streak) and the `FeatureExtractor` (buffer, flight times)
+2. A `LogEntry::SessionStart` marker is written to the NDJSON log
+3. The analysis thread's pending event queue is flushed via a `ResetSignal` atomic
+4. The Dashboard and state polling begin
+
+The overlay window continues to poll cognitive state regardless of the start screen state.
+
 ### Keyboard Idle Detection (v2.7)
 
 A `LAST_KEYSTROKE_TIMESTAMP` atomic tracks the most recent keypress. The `get_keyboard_idle_ms` IPC command returns milliseconds since the last keystroke. The Dashboard displays real-time session elapsed time and keyboard activity status (Active / Idle).
@@ -436,6 +447,9 @@ Record types:
 ```jsonc
 // Session metadata
 {"type":"meta","session_start":1740000000000}
+
+// Session start marker (emitted when user clicks "開始する")
+{"type":"session_start","t":1740000000500}
 
 // Raw keystroke event
 {"type":"key","t":1740000001234,"vk":65,"press":true}
@@ -542,4 +556,4 @@ Research prototype. All rights reserved.
 
 ---
 
-*Last updated: 2026-03-03*
+*Last updated: 2026-03-04*

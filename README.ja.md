@@ -126,7 +126,7 @@ GSE-prototype/
 │   ├── components/
 │   │   ├── Dashboard.tsx        # 状態確率バー + セッション情報
 │   │   └── Overlay.tsx          # Nudge（赤い霧）+ Wall（全画面遮断）
-│   ├── App.tsx                  # 介入ステートマシン（Lv1 → Lv2 エスカレーション）
+│   ├── App.tsx                  # スタート画面 + 介入ステートマシン（Lv1 → Lv2 エスカレーション）
 │   └── main.tsx
 │
 ├── src-tauri/                   # Rust / Tauri 2.0 バックエンド
@@ -143,7 +143,7 @@ GSE-prototype/
 │   │   │   ├── ime.rs           # ImeMonitor（IME_ACTIVE 読み取り）+ IME open ポーリングスレッド
 │   │   │   ├── ime_macos.rs     # TIS Carbon FFI（dispatch_sync_f でメインキューへ）
 │   │   │   └── mod.rs
-│   │   ├── lib.rs               # Tauri セットアップ、スレッド管理、IPC コマンド
+│   │   ├── lib.rs               # Tauri セットアップ、スレッド管理、IPC コマンド（start_session 含む）
 │   │   ├── logger.rs            # 非同期 NDJSON セッションロガー
 │   │   ├── main.rs
 │   │   ├── sensors.rs           # センサーディスパッチャ（macOS スタブ）
@@ -418,6 +418,17 @@ Wall は**スマートフォンベースの Zen タイマー**で解除されま
 
 ダッシュボードに **Monk Mode トグル**を追加。有効化（ON）すると Wall 自動介入（Lv2）が**無効**になり、`stuck > 0.70` が持続しても全画面遮断は発動しません。Nudge（Lv1 赤いビネット）は引き続き動作します。トグルは `monk-mode-change` Tauri イベントをブロードキャストし、メインウィンドウとオーバーレイウィンドウの両方で状態が同期されます。
 
+### セッション開始画面（v2.8）
+
+起動時に「Generative Struggle Engine」のタイトルと「開始する」ボタンを持つ**スタート画面**が表示されます。キーボードフック・分析スレッドはバックグラウンドで既に待機しています。ユーザーが開始ボタンをクリックすると：
+
+1. `start_session` IPC コマンドが `CognitiveStateEngine`（HMM確率・EWMA・backspace streak）と `FeatureExtractor`（バッファ・フライトタイム）をリセット
+2. `LogEntry::SessionStart` マーカーを NDJSON ログに記録
+3. `ResetSignal` アトミックを通じて分析スレッドの未処理イベントキューをフラッシュ
+4. ダッシュボード表示と状態ポーリングが開始
+
+オーバーレイウィンドウはスタート画面の状態に関係なく常時認知状態をポーリングします。
+
 ### キーボードアイドル検知（v2.7）
 
 `LAST_KEYSTROKE_TIMESTAMP` アトミックで最終打鍵時刻を記録。`get_keyboard_idle_ms` IPC コマンドが最終打鍵からの経過ミリ秒を返します。ダッシュボードにセッション経過時間とキーボード状態（Active / Idle）がリアルタイム表示されます。
@@ -437,6 +448,9 @@ Wall は**スマートフォンベースの Zen タイマー**で解除されま
 ```jsonc
 // セッションメタデータ
 {"type":"meta","session_start":1740000000000}
+
+// セッション開始マーカー（ユーザーが「開始する」をクリック時に出力）
+{"type":"session_start","t":1740000000500}
 
 // 生キーストロークイベント
 {"type":"key","t":1740000001234,"vk":65,"press":true}
@@ -557,4 +571,4 @@ npm run tauri build
 
 ---
 
-*最終更新：2026-03-03*
+*最終更新：2026-03-04*

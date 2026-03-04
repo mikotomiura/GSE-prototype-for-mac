@@ -68,6 +68,14 @@ impl FeatureExtractor {
         }
     }
 
+    /// バッファ・フライトタイム・リリース時刻をクリアする。
+    /// セッション開始時に呼び出され、前回セッションのデータを破棄する。
+    pub fn reset(&mut self) {
+        self.buffer.clear();
+        self.flight_times.clear();
+        self.last_release_time = None;
+    }
+
     pub fn process_event(&mut self, event: InputEvent) {
         if self.buffer.len() >= self.capacity {
             self.buffer.pop_front();

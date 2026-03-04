@@ -13,11 +13,17 @@ use crate::sensors::SensorManager;
 use crossbeam_channel::{self, RecvTimeoutError, Sender};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
+
+// ---------------------------------------------------------------------------
+// リセットシグナル (start_session → 分析スレッド)
+// ---------------------------------------------------------------------------
+
+struct ResetSignal(Arc<AtomicBool>);
 
 // ---------------------------------------------------------------------------
 // ログ状態 (quit_app からも参照できるよう Tauri state で管理)
@@ -101,6 +107,33 @@ fn stop_wall_server(wall: State<WallServerState>) {
     if let Some(server) = guard.take() {
         server.stop();
     }
+}
+
+/// セッションを開始する。
+/// 1. CognitiveStateEngine をリセット (HMM初期化)
+/// 2. ResetSignal を true にセット (分析スレッドへの信号)
+/// 3. LogEntry::SessionStart をログに記録 (境界マーカー)
+#[tauri::command]
+fn start_session(
+    engine: State<CognitiveStateEngine>,
+    reset: State<ResetSignal>,
+    log: State<Arc<Mutex<LogState>>>,
+) {
+    // 1. HMM を初期値にリセット
+    engine.reset();
+
+    // 2. 分析スレッドへリセットシグナルを送信
+    reset.0.store(true, Ordering::Release);
+
+    // 3. セッション開始マーカーをログに記録
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let guard = log.lock().unwrap_or_else(|p| p.into_inner());
+    let _ = guard.tx.try_send(LogEntry::SessionStart { timestamp });
+
+    tracing::info!("Session started (engine reset, signal sent)");
 }
 
 /// 現在のセッションログファイルのパスを返す (UI表示用)
@@ -242,6 +275,11 @@ pub fn run() {
     let log_tx_ime_poll = log_tx.clone();
     let log_tx_analysis = log_tx;
 
+    // リセットシグナル (start_session → 分析スレッド)
+    let reset_signal = Arc::new(AtomicBool::new(false));
+    let reset_signal_for_thread = reset_signal.clone();
+    let reset_state = ResetSignal(reset_signal);
+
     // 分析スレッド
     // イベント駆動 (rx.recv) の代わりに recv_timeout を使い、
     // 無入力期間中もタイマーでHMMを継続更新する。
@@ -262,6 +300,16 @@ pub fn run() {
         let mut last_engine_update = Instant::now() - Duration::from_secs(1);
 
         loop {
+            // リセットシグナルチェック: start_session から送信される
+            if reset_signal_for_thread.swap(false, Ordering::AcqRel) {
+                tracing::info!("Analysis thread: reset signal received");
+                extractor.reset();
+                // 未処理キューをフラッシュ
+                while rx.try_recv().is_ok() {}
+                last_event_time = Instant::now();
+                last_engine_update = Instant::now() - Duration::from_secs(1);
+            }
+
             match rx.recv_timeout(Duration::from_millis(1000)) {
                 Ok(event) => {
                     if engine_for_thread.get_paused() {
@@ -446,6 +494,7 @@ pub fn run() {
         .manage(engine)
         .manage(log_state)
         .manage(wall_state)
+        .manage(reset_state)
         .invoke_handler(tauri::generate_handler![
             get_cognitive_state,
             get_keyboard_idle_ms,
@@ -454,6 +503,7 @@ pub fn run() {
             get_hook_status,
             start_wall_server,
             stop_wall_server,
+            start_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

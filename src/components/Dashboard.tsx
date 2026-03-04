@@ -51,7 +51,7 @@ const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit, hookActiv
 
   return (
     <div className={`dashboard-container state-${dominant.toLowerCase()}`}>
-      <h2>Cognitive State Engine</h2>
+      <h2>Generative Struggle Engine</h2>
 
       {/* Input Monitoring 権限バナー — macOS で権限未付与の場合のみ表示 */}
       {hookActive === false && (
