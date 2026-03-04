@@ -13,8 +13,9 @@ interface CognitiveStateRaw {
 }
 
 // Lv1トリガー閾値: NudgeはOverlay.tsxで stuck>0.6 時に表示
-// Lv2トリガー閾値: Wallは stuck>0.7 が 30秒継続した際に表示
+// Lv2トリガー閾値: Wallは stuck>0.7 の累積時間が30秒に達した際に表示
 const LV2_STUCK_THRESHOLD = 0.7;
+const LV2_SLACK_THRESHOLD = 0.5; // これ未満で累積を減衰（明確な回復）
 const LV2_TIMER_MS = 30_000;
 
 function App() {
@@ -48,6 +49,7 @@ function App() {
   //    Wall累積ロジックもここで実行（500ms間隔が保証されるため）
   useEffect(() => {
     if (windowLabel !== "overlay" && !isStarted) return;
+    lastStuckTickRef.current = Date.now();
 
     const interval = setInterval(async () => {
       try {
@@ -58,19 +60,23 @@ function App() {
         setCognitiveState(state);
         setKeyboardIdleMs(idle);
 
-        // Lv2 Wall 累積カウンター（ヒステリシスバンド付き）
+        // Lv2 Wall 累積カウンター（ヒステリシスバンド + 減衰付き）
+        const now = Date.now();
+        const elapsed = now - lastStuckTickRef.current;
+        lastStuckTickRef.current = now;
+
         if (!isWallActiveRef.current && !isMonkModeRef.current) {
           if (state.stuck > LV2_STUCK_THRESHOLD) {
-            stuckAccMsRef.current += 500;
+            stuckAccMsRef.current += elapsed;
             if (stuckAccMsRef.current >= LV2_TIMER_MS) {
               setIsWallActive(true);
               stuckAccMsRef.current = 0;
             }
-          } else if (state.stuck < 0.5) {
-            // 明確な回復: 累積リセット
-            stuckAccMsRef.current = 0;
+          } else if (state.stuck < LV2_SLACK_THRESHOLD) {
+            // 明確な回復: 2倍速で減衰（瞬時リセットより寛容）
+            stuckAccMsRef.current = Math.max(0, stuckAccMsRef.current - elapsed * 2);
           }
-          // else: 0.5 ≤ stuck ≤ 0.7 → 累積一時停止（遊び）
+          // else: SLACK ≤ stuck ≤ STUCK → 累積一時停止（遊び/スラック）
         } else {
           stuckAccMsRef.current = 0;
         }
@@ -88,12 +94,13 @@ function App() {
   //    Monk Mode ON 時は Wall を一切発動しない
   //
   //    【改善】旧実装の setTimeout は一瞬の stuck 低下でリセットされていた。
-  //    新実装: 累積カウンター + ヒステリシスバンド。
-  //      - stuck > 0.7 → 累積 +500ms
-  //      - 0.5 ≤ stuck ≤ 0.7 → 累積を一時停止（リセットしない = 遊び/スラック）
-  //      - stuck < 0.5 → 累積リセット（明確な回復）
+  //    新実装: Date.now() ベースの累積カウンター + ヒステリシスバンド + 減衰。
+  //      - stuck > 0.7 → 累積 +elapsed (正確な経過時間)
+  //      - 0.5 ≤ stuck ≤ 0.7 → 累積を一時停止（遊び/スラック）
+  //      - stuck < 0.5 → 累積を2倍速で減衰（段階的な回復処理）
   //    ポーリング間隔(500ms)ごとに評価するため、ref 経由で最新値を参照する。
   const stuckAccMsRef = useRef(0);
+  const lastStuckTickRef = useRef(Date.now());
   const isWallActiveRef = useRef(isWallActive);
   const isMonkModeRef = useRef(isMonkMode);
   useEffect(() => { isWallActiveRef.current = isWallActive; }, [isWallActive]);

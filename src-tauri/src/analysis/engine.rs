@@ -38,8 +38,8 @@ pub struct CognitiveStateEngine {
 
     // Hysteresis layer: slow EMA of reported probabilities.
     // Prevents instant state flips (e.g. Cold-Start after window reset).
-    // α = 0.25 for normal updates (~4s time-constant).
-    // α = 0.50 for backspace-penalty bin (faster Stuck response).
+    // α = 0.40 for normal updates (~2.5s time-constant).
+    // α = 0.60 for backspace-penalty bin (faster Stuck response).
     display_probs: Arc<Mutex<[f64; 3]>>,
 }
 
@@ -139,9 +139,10 @@ impl CognitiveStateEngine {
             is_paused: Arc::new(AtomicBool::new(false)),
             backspace_streak: Arc::new(AtomicU32::new(0)),
             has_pending_penalty: Arc::new(AtomicBool::new(false)),
-            // (0.3, 0.5) = 中立領域で初期化 (obs=7; Flow/Inc/Stuck がほぼ均等な観測ビン)
-            // (0.0, 1.0) で開始すると初回更新で p_flow=1.0 に固定されるため変更
-            axes_ewma: Arc::new(Mutex::new((0.3, 0.5))),
+            // (0.1, 0.8) = Flow領域で初期化 (obs=4; Flow優勢ビン)
+            // 初期確率 [0.80, 0.15, 0.05] と整合的な開始位置。
+            // セッション開始直後のサイレンス観測(f1=2000)による過渡ノイズを吸収する。
+            axes_ewma: Arc::new(Mutex::new((0.1, 0.8))),
             // display_probs は initial_probs と同値で初期化
             display_probs: Arc::new(Mutex::new(initial_probs)),
         }
@@ -161,8 +162,8 @@ impl CognitiveStateEngine {
             Err(poisoned) => *poisoned.into_inner() = initial_probs,
         }
         match self.axes_ewma.lock() {
-            Ok(mut e) => *e = (0.3, 0.5),
-            Err(poisoned) => *poisoned.into_inner() = (0.3, 0.5),
+            Ok(mut e) => *e = (0.1, 0.8),
+            Err(poisoned) => *poisoned.into_inner() = (0.1, 0.8),
         }
         self.backspace_streak.store(0, Ordering::Relaxed);
         self.has_pending_penalty.store(false, Ordering::Release);
@@ -373,12 +374,14 @@ impl CognitiveStateEngine {
         *current = new_probs;
 
         // ── Hysteresis Layer ──────────────────────────────────────────────
-        // display_probs に遅い EMA を適用し、ウィンドウリセット時の
+        // display_probs に EMA を適用し、ウィンドウリセット時の
         // Cold-Start 瞬間遷移 (Stuck→Flow in 1ms) を防ぐ。
         //
-        // α=0.25 (通常): 時定数 ≈ 4 更新 ≈ 4 秒
-        // α=0.50 (ペナルティ): Backspace 連続時は素早く Stuck に収束
-        let display_alpha = if apply_backspace_penalty { 0.50 } else { 0.25 };
+        // α=0.40 (通常): 時定数 ≈ 2.5 更新 ≈ 2.5 秒
+        //   emission floor 削除 (0.05→0.01) で HMM 応答が鋭くなったため、
+        //   旧 α=0.25 (4秒) から引き上げて表示の追従速度を改善。
+        // α=0.60 (ペナルティ): Backspace 連続時は素早く Stuck に収束
+        let display_alpha = if apply_backspace_penalty { 0.60 } else { 0.40 };
 
         let mut display = match self.display_probs.lock() {
             Ok(g) => g,
