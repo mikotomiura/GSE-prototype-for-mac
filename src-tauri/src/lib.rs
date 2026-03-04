@@ -332,6 +332,11 @@ pub fn run() {
                     if !session_active_for_thread.load(Ordering::Acquire) {
                         continue;
                     }
+                    // リセット保留中 — リセット前の古いイベントをスキップ
+                    // (次のループ先頭で reset_signal が処理される)
+                    if reset_signal_for_thread.load(Ordering::Acquire) {
+                        continue;
+                    }
 
                     if engine_for_thread.get_paused() {
                         continue;
@@ -398,6 +403,11 @@ pub fn run() {
                 Err(RecvTimeoutError::Timeout) => {
                     // セッション未開始 — サイレンス処理もスキップ
                     if !session_active_for_thread.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    // リセット保留中 — リセット前の古いサイレンス観測をスキップ
+                    // (recv_timeout 中に start_session が呼ばれた場合の競合回避)
+                    if reset_signal_for_thread.load(Ordering::Acquire) {
                         continue;
                     }
                     // 無入力期間の検出: サイレンス特徴量でHMMを更新する。
