@@ -161,12 +161,17 @@ function App() {
   if (!isStarted) {
     return (
       <div className="start-screen">
-        <h1>Generative Struggle Engine</h1>
+        <div className="start-header">
+          <h1>Generative Struggle Engine</h1>
+          <p className="start-description">
+            キーストロークを解析し、あなたの認知状態をリアルタイムで推定します。
+          </p>
+        </div>
         <button className="start-button" onClick={handleStart}>
           開始する
         </button>
         <p className="start-hint">
-          キーストローク動態から認知状態を推定します
+          自然にタイピングを始めると、検知が動作します。
         </p>
       </div>
     );
