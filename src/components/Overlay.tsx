@@ -24,6 +24,7 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
     // Wall発動後の打鍵検知用 ref
     const wallStartTimeRef = useRef(0);
     const lastWarnedKeyAtRef = useRef(0);
+    const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // 透過背景 + 即座にクリック透過を設定（マウント直後）
     useEffect(() => {
@@ -101,13 +102,13 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
                 ) {
                     lastWarnedKeyAtRef.current = lastKeyAt;
                     setShowTypingWarning(true);
-                    // 2.5秒後に警告を非表示
-                    setTimeout(() => setShowTypingWarning(false), 2500);
+                    if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
+                    warningTimerRef.current = setTimeout(() => setShowTypingWarning(false), 2500);
                 }
             }).catch(() => {});
         }, 300);
 
-        return () => clearInterval(interval);
+        return () => { clearInterval(interval); if (warningTimerRef.current) clearTimeout(warningTimerRef.current); };
     }, [isWallActive]);
 
     return (

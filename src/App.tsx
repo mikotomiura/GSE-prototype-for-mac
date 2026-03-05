@@ -44,6 +44,14 @@ function App() {
       .catch(() => setHookActive(true)); // エラー時は楽観的に true
   }, []);
 
+  // Lv2 Wall 累積カウンター用 ref（ポーリング useEffect 内で参照）
+  const stuckAccMsRef = useRef(0);
+  const lastStuckTickRef = useRef(Date.now());
+  const isWallActiveRef = useRef(isWallActive);
+  const isMonkModeRef = useRef(isMonkMode);
+  useEffect(() => { isWallActiveRef.current = isWallActive; }, [isWallActive]);
+  useEffect(() => { isMonkModeRef.current = isMonkMode; }, [isMonkMode]);
+
   // 2. Poll Cognitive State (Every 500ms) + Keyboard Idle + Lv2 Wall累積
   //    オーバーレイは常時ポーリング、メインウィンドウは isStarted 依存
   //    Wall累積ロジックもここで実行（500ms間隔が保証されるため）
@@ -87,24 +95,6 @@ function App() {
 
     return () => clearInterval(interval);
   }, [isStarted, windowLabel]);
-
-  // 3. Intervention Layer ロジック
-  //    D-2: Lv1 (Nudge) は Overlay.tsx 側で stuck>0.6 時に即時表示済み
-  //    D-3: Lv2 (Ambient Fade/Wall) は stuck>LV2_STUCK_THRESHOLD の累積時間が LV2_TIMER_MS に達したら発動
-  //    Monk Mode ON 時は Wall を一切発動しない
-  //
-  //    【改善】旧実装の setTimeout は一瞬の stuck 低下でリセットされていた。
-  //    新実装: Date.now() ベースの累積カウンター + ヒステリシスバンド + 減衰。
-  //      - stuck > 0.7 → 累積 +elapsed (正確な経過時間)
-  //      - 0.5 ≤ stuck ≤ 0.7 → 累積を一時停止（遊び/スラック）
-  //      - stuck < 0.5 → 累積を2倍速で減衰（段階的な回復処理）
-  //    ポーリング間隔(500ms)ごとに評価するため、ref 経由で最新値を参照する。
-  const stuckAccMsRef = useRef(0);
-  const lastStuckTickRef = useRef(Date.now());
-  const isWallActiveRef = useRef(isWallActive);
-  const isMonkModeRef = useRef(isMonkMode);
-  useEffect(() => { isWallActiveRef.current = isWallActive; }, [isWallActive]);
-  useEffect(() => { isMonkModeRef.current = isMonkMode; }, [isMonkMode]);
 
   // 4. Sensor Integration (Unlock Logic) + メインウィンドウへのフォーカス復帰
   useEffect(() => {
