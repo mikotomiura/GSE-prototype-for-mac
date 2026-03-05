@@ -73,6 +73,14 @@ fn get_keyboard_idle_ms() -> u64 {
     if last == 0 { 0 } else { now.saturating_sub(last) }
 }
 
+/// 最終キーストロークの UNIX エポックミリ秒タイムスタンプを返す。
+/// 打鍵がまだ無い場合は 0 を返す。
+/// フロントエンドで Wall 発動後の打鍵かどうかを判定するために使用。
+#[tauri::command]
+fn get_last_keypress_timestamp() -> u64 {
+    crate::input::hook::LAST_KEYSTROKE_TIMESTAMP.load(Ordering::Relaxed)
+}
+
 /// キーボードフック（Input Monitoring）の状態を返す。
 /// Windows: 常に true（権限不要）。
 /// macOS: CGEventTap が正常にインストールされている場合のみ true。
@@ -557,6 +565,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_cognitive_state,
             get_keyboard_idle_ms,
+            get_last_keypress_timestamp,
             quit_app,
             get_session_file,
             get_hook_status,

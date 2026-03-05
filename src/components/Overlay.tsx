@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -6,7 +6,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 interface OverlayProps {
     stuckProb: number;
     isWallActive: boolean;
-    keyboardIdleMs: number;
 }
 
 interface WallServerInfo {
@@ -14,15 +13,17 @@ interface WallServerInfo {
     url: string;
 }
 
-// 打鍵検知の閾値: Wall中にこの時間(ms)以内にキー入力があれば警告表示
-const TYPING_WARN_THRESHOLD_MS = 3000;
-
-const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive, keyboardIdleMs }) => {
+const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive }) => {
     const [nudgeOpacity, setNudgeOpacity] = useState(0);
     const [qrSvg, setQrSvg] = useState<string | null>(null);
     const [serverUrl, setServerUrl] = useState<string | null>(null);
     const [phoneConnected, setPhoneConnected] = useState(false);
+    const [showTypingWarning, setShowTypingWarning] = useState(false);
     const currentWindow = useMemo(() => getCurrentWindow(), []);
+
+    // Wall発動後の打鍵検知用 ref
+    const wallStartTimeRef = useRef(0);
+    const lastWarnedKeyAtRef = useRef(0);
 
     // 透過背景 + 即座にクリック透過を設定（マウント直後）
     useEffect(() => {
@@ -79,8 +80,35 @@ const Overlay: React.FC<OverlayProps> = ({ stuckProb, isWallActive, keyboardIdle
         }
     }, [stuckProb, isWallActive]);
 
-    // Wall中の打鍵検知: keyboardIdleMs > 0 かつ閾値以内なら警告
-    const showTypingWarning = isWallActive && keyboardIdleMs > 0 && keyboardIdleMs < TYPING_WARN_THRESHOLD_MS;
+    // Wall発動後の打鍵検知 — Wall発動「後」の打鍵のみ警告 (False Positive防止)
+    useEffect(() => {
+        if (!isWallActive) {
+            wallStartTimeRef.current = 0;
+            lastWarnedKeyAtRef.current = 0;
+            setShowTypingWarning(false);
+            return;
+        }
+
+        // Wall発動時刻を記録
+        wallStartTimeRef.current = Date.now();
+
+        const interval = setInterval(() => {
+            invoke<number>("get_last_keypress_timestamp").then((lastKeyAt) => {
+                // Wall発動後の打鍵かつ、前回警告から1秒以上経過（デバウンス）
+                if (
+                    lastKeyAt > wallStartTimeRef.current &&
+                    lastKeyAt > lastWarnedKeyAtRef.current + 1000
+                ) {
+                    lastWarnedKeyAtRef.current = lastKeyAt;
+                    setShowTypingWarning(true);
+                    // 2.5秒後に警告を非表示
+                    setTimeout(() => setShowTypingWarning(false), 2500);
+                }
+            }).catch(() => {});
+        }, 300);
+
+        return () => clearInterval(interval);
+    }, [isWallActive]);
 
     return (
         <div className="overlay-root">

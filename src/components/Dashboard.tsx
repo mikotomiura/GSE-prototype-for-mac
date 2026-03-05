@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { emit } from "@tauri-apps/api/event";
 
 interface DashboardProps {
@@ -15,11 +15,12 @@ interface DashboardProps {
 
 const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit, hookActive, keyboardIdleMs, isMonkMode }) => {
   const [sessionSeconds, setSessionSeconds] = useState(0);
+  const sessionStartRef = useRef(Date.now());
 
-  // Session elapsed timer (1Hz)
+  // Session elapsed timer (1Hz) — 絶対時間ベースでドリフトを防止
   useEffect(() => {
     const interval = setInterval(() => {
-      setSessionSeconds((prev) => prev + 1);
+      setSessionSeconds(Math.floor((Date.now() - sessionStartRef.current) / 1000));
     }, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -46,7 +47,7 @@ const Dashboard: React.FC<DashboardProps> = ({ cognitiveState, onQuit, hookActiv
   };
 
   const handleMonkModeToggle = () => {
-    emit("monk-mode-change", !isMonkMode);
+    emit("monk-mode-changed", !isMonkMode);
   };
 
   return (

@@ -125,7 +125,7 @@ function App() {
 
   // 5. Monk Mode — 両ウィンドウ間で同期するため Tauri イベントを使用
   useEffect(() => {
-    const unlisten = listen<boolean>("monk-mode-change", (event) => {
+    const unlisten = listen<boolean>("monk-mode-changed", (event) => {
       setIsMonkMode(event.payload);
     });
 
@@ -140,7 +140,6 @@ function App() {
       <Overlay
         stuckProb={cognitiveState.stuck}
         isWallActive={isWallActive}
-        keyboardIdleMs={keyboardIdleMs}
       />
     );
   }
