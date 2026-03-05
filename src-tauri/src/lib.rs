@@ -127,14 +127,15 @@ fn start_session(
     active: State<SessionActive>,
     log: State<Arc<Mutex<LogState>>>,
 ) {
-    // 1. HMM を初期値にリセット
+    // 1. セッションをアクティブにする（分析スレッドの処理を開始）
+    //    先にアクティブにすることで、リセットシグナル処理後すぐに打鍵を受け付けられる
+    active.0.store(true, Ordering::Release);
+
+    // 2. HMM を初期値にリセット
     engine.reset();
 
-    // 2. 分析スレッドへリセットシグナルを送信
+    // 3. 分析スレッドへリセットシグナルを送信
     reset.0.store(true, Ordering::Release);
-
-    // 3. セッションをアクティブにする（分析スレッドの処理を開始）
-    active.0.store(true, Ordering::Release);
 
     // 4. セッション開始マーカーをログに記録
     let timestamp = SystemTime::now()
@@ -320,8 +321,6 @@ pub fn run() {
             if reset_signal_for_thread.swap(false, Ordering::AcqRel) {
                 tracing::info!("Analysis thread: reset signal received");
                 extractor.reset();
-                // 未処理キューをフラッシュ
-                while rx.try_recv().is_ok() {}
                 last_event_time = Instant::now();
                 last_engine_update = Instant::now() - Duration::from_secs(1);
             }
@@ -419,7 +418,7 @@ pub fn run() {
                     if let Some(sf) = extractor.make_silence_observation(silence_secs) {
                         // サイレンス中も現在のIMEモードを使用
                         let ime_open = input::hook::IME_OPEN.load(Ordering::Relaxed);
-                        engine_for_thread.update(&sf, ime_open);
+                        engine_for_thread.update_silence(&sf, ime_open);
                         last_engine_update = Instant::now();
 
                         let state_probs = engine_for_thread.get_current_state();
@@ -468,9 +467,33 @@ pub fn run() {
         tracing::info!("IME Monitor thread started");
         let monitor = input::ime::ImeMonitor::new();
         let mut last_active = false;
+        // IME_ACTIVE が true になった時刻を記録（8秒フェイルセーフ用）
+        let mut active_since: Option<Instant> = None;
 
         loop {
             let active = monitor.is_candidate_window_open();
+
+            // 8秒フェイルセーフ: IME_ACTIVE が8秒以上継続した場合、
+            // OSイベントの取りこぼし（stale）とみなしてリセットする。
+            let active = if active {
+                match active_since {
+                    Some(since) if since.elapsed() >= Duration::from_secs(8) => {
+                        tracing::warn!(
+                            "IME candidate window stale (>8s) — forcing reset"
+                        );
+                        active_since = None;
+                        false // stale として false にリセット
+                    }
+                    Some(_) => true, // まだ8秒未満
+                    None => {
+                        active_since = Some(Instant::now());
+                        true
+                    }
+                }
+            } else {
+                active_since = None;
+                false
+            };
 
             if active != last_active {
                 tracing::debug!(

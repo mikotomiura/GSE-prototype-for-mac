@@ -399,6 +399,78 @@ impl CognitiveStateEngine {
         }
     }
 
+    /// 無入力期間（サイレンス）用のHMM更新。
+    /// 通常の `update()` と異なり、EWMA を更新しない。
+    /// これにより、無入力時にEWMAが高Friction方向にドリフトすることを防ぐ。
+    /// HMMの遷移確率による状態更新は行うため、長時間無入力→Incubation/Stuck 検出は維持される。
+    pub fn update_silence(&self, features: &Features, ime_open: bool) {
+        if self.get_paused() {
+            return;
+        }
+
+        let (raw_x, raw_y) = self.calculate_latent_axes(features, ime_open);
+
+        // EWMA を更新せず、現在の EWMA 値を読み取るのみ
+        let (x, y) = match self.axes_ewma.lock() {
+            Ok(ewma) => *ewma,
+            Err(poisoned) => *poisoned.into_inner(),
+        };
+
+        // サイレンス観測のビン計算には現在のEWMA位置を使用
+        // （raw値はサイレンスの極端値なので、EWMA位置の方がHMM観測として適切）
+        let _ = (raw_x, raw_y); // raw値は使用しない（ドリフト防止）
+        let x_bin = (x * 5.0).floor().min(4.0) as usize;
+        let y_bin = (y * 5.0).floor().min(4.0) as usize;
+        let obs = x_bin * 5 + y_bin;
+
+        // サイレンス中はペナルティビンを適用しない
+
+        let mut current = match self.current_state_probs.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        let old_probs = *current;
+        let mut new_probs = [0.0; 3];
+        let n_states = 3;
+
+        let mut sum_prob = 0.0;
+        for j in 0..n_states {
+            let mut trans_sum = 0.0;
+            for i in 0..n_states {
+                let t_prob = self.transitions[i * n_states + j];
+                trans_sum += old_probs[i] * t_prob;
+            }
+            let e_prob = self.emissions[j * 26 + obs];
+            new_probs[j] = trans_sum * e_prob;
+            sum_prob += new_probs[j];
+        }
+
+        if sum_prob > 0.0 {
+            for j in 0..n_states {
+                new_probs[j] /= sum_prob;
+            }
+        }
+
+        *current = new_probs;
+
+        // Hysteresis Layer (通常のα=0.40)
+        let mut display = match self.display_probs.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let mut disp_sum = 0.0;
+        for i in 0..n_states {
+            display[i] = 0.40 * new_probs[i] + 0.60 * display[i];
+            disp_sum += display[i];
+        }
+        if disp_sum > 0.0 {
+            for v in display.iter_mut() {
+                *v /= disp_sum;
+            }
+        }
+    }
+
     pub fn get_current_state(&self) -> HashMap<CognitiveState, f64> {
         // display_probs (ヒステリシス層) を返す。
         // 生の current_state_probs は瞬間値; display_probs は遅い EMA により
