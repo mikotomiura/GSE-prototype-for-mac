@@ -106,7 +106,7 @@
     ├─ 分析スレッド            ← recv_timeout(1 s) → 1 Hz タイマーゲート; HMM 更新 ≤ 1回/秒
     │       │ Arc<Mutex<CognitiveStateEngine>> (Tauri managed state)
     │       │ 合成摩擦: 沈黙 ≥ 20 s → F6/F3 を Stuck 方向へ漸増
-    ├─ IME モニタースレッド    ← IME_ACTIVE を 100ms ごとに読み取り（フックスレッドの状態マシンが設定）
+    ├─ IME モニタースレッド    ← IME_ACTIVE を 100ms ごとに読み取り（フックスレッドの状態マシンが設定）；8 秒フェイルセーフ自動リセット
     ├─ IME ポーリングスレッド  ← recv_timeout(100ms) ウェイク; TIS を dispatch_sync_f でメインキューへ
     │
     ├─ ロガースレッド          ← bounded channel(512) → NDJSON ファイル (BufWriter)
@@ -382,7 +382,7 @@ IME ポーリングスレッド
 | `IME_ACTIVE` | フック（状態マシン） | IME モニタースレッド → `set_paused()` | 候補ウィンドウ表示中（キーストローク状態マシン） |
 | `IME_STATE_DIRTY` | フック（JIS キー） | ポーリングスレッド（ドレイン） | ハウスキーピング |
 | `HOOK_ACTIVE` | `hook_macos::start()` | `get_hook_status` コマンド | 権限バナー表示トリガー |
-| `LAST_KEYSTROKE_TIMESTAMP` | フック（全 keyDown/keyUp） | `get_keyboard_idle_ms` コマンド | キーボードアイドル時間計算 |
+| `LAST_KEYSTROKE_TIMESTAMP` | フック（全 keyDown/keyUp） | `get_keyboard_idle_ms`、`get_last_keypress_timestamp` コマンド | キーボードアイドル時間計算 + Wall 中打鍵検知 |
 
 ### `Option<bool>` 初期状態
 
@@ -395,7 +395,7 @@ IME ポーリングスレッド
 分析スレッドは `recv_timeout(1000 ms)` により **1 Hz タイマーゲート**を実装します。
 
 - **1 秒以内にキーストローク到着：** 特徴量を蓄積。前回の HMM ステップから 1 秒以上経過した場合のみ `engine.update()` を呼び出す。
-- **タイムアウト：** `make_silence_observation()` が合成沈黙観測値を生成して HMM に入力。
+- **タイムアウト：** `make_silence_observation()` が合成沈黙観測値を生成し、`engine.update_silence()` に入力。このメソッドは HMM 前向きステップを実行するが **EWMA は更新しない**ため、無入力時に EWMA が高 Friction 方向にドリフトすることを防止する。
 
 これにより **1 秒あたり正確に 1 回の HMM 前向きステップ**が保証され、EMA 時定数 τ = 1/α ≈ **4 秒**がタイピング速度に依存せず数学的に正確に機能します。
 
@@ -416,16 +416,17 @@ Wall は**スマートフォンベースの Zen タイマー**で解除されま
 
 ### Monk Mode（v2.7）
 
-ダッシュボードに **Monk Mode トグル**を追加。有効化（ON）すると Wall 自動介入（Lv2）が**無効**になり、`stuck > 0.70` が持続しても全画面遮断は発動しません。Nudge（Lv1 赤いビネット）は引き続き動作します。トグルは `monk-mode-change` Tauri イベントをブロードキャストし、メインウィンドウとオーバーレイウィンドウの両方で状態が同期されます。
+ダッシュボードに **Monk Mode トグル**を追加。有効化（ON）すると Wall 自動介入（Lv2）が**無効**になり、`stuck > 0.70` が持続しても全画面遮断は発動しません。Nudge（Lv1 赤いビネット）は引き続き動作します。トグルは `monk-mode-changed` Tauri イベントをブロードキャストし、メインウィンドウとオーバーレイウィンドウの両方で状態が同期されます。
 
 ### セッション開始画面（v2.8）
 
 起動時に「Generative Struggle Engine」のタイトルと「開始する」ボタンを持つ**スタート画面**が表示されます。キーボードフック・分析スレッドはバックグラウンドで既に待機しています。ユーザーが開始ボタンをクリックすると：
 
-1. `start_session` IPC コマンドが `CognitiveStateEngine`（HMM確率・EWMA・backspace streak）と `FeatureExtractor`（バッファ・フライトタイム）をリセット
-2. `LogEntry::SessionStart` マーカーを NDJSON ログに記録
-3. `ResetSignal` アトミックを通じて分析スレッドの未処理イベントキューをフラッシュ
-4. ダッシュボード表示と状態ポーリングが開始
+1. `SessionActive` フラグを `true` に設定（分析スレッドが即座にイベント処理を開始可能に）
+2. `start_session` IPC コマンドが `CognitiveStateEngine`（HMM確率・EWMA・backspace streak）をリセット
+3. `ResetSignal` アトミックが分析スレッドに `FeatureExtractor`（バッファ・フライトタイム）のリセットをトリガー — イベントキューはドレインされず、リセット中の打鍵も保持
+4. `LogEntry::SessionStart` マーカーを NDJSON ログに記録
+5. ダッシュボード表示と状態ポーリングが開始
 
 オーバーレイウィンドウはスタート画面の状態に関係なく常時認知状態をポーリングします。
 
@@ -607,4 +608,4 @@ npm run tauri build
 
 ---
 
-*最終更新：2026-03-04*
+*最終更新：2026-03-05*

@@ -105,7 +105,7 @@ Main Thread (Tauri event loop + GCD main queue for TIS)
     ├─ Analysis Thread     ← recv_timeout(1 s) → 1 Hz timer gate; HMM update ≤ 1×/sec
     │       │ Arc<Mutex<CognitiveStateEngine>> (Tauri managed state)
     │       │ Synthetic Friction: silence ≥ 20 s → ramps F6/F3 toward Stuck
-    ├─ IME Monitor Thread  ← reads IME_ACTIVE every 100 ms (set by Hook Thread state machine)
+    ├─ IME Monitor Thread  ← reads IME_ACTIVE every 100 ms (set by Hook Thread state machine); 8 s failsafe auto-reset
     ├─ IME Polling Thread  ← recv_timeout(100 ms) wake; TIS dispatch_sync_f to main queue
     │
     ├─ Logger Thread       ← bounded channel(512) → NDJSON file (BufWriter)
@@ -381,7 +381,7 @@ IME Polling Thread
 | `IME_ACTIVE` | hook (state machine) | IME Monitor thread → `set_paused()` | Candidate window visible (keystroke state machine) |
 | `IME_STATE_DIRTY` | hook (JIS keys) | polling thread (drain) | Housekeeping |
 | `HOOK_ACTIVE` | `hook_macos::start()` | `get_hook_status` command | Permission banner trigger |
-| `LAST_KEYSTROKE_TIMESTAMP` | hook (every keyDown/keyUp) | `get_keyboard_idle_ms` command | Keyboard idle time calculation |
+| `LAST_KEYSTROKE_TIMESTAMP` | hook (every keyDown/keyUp) | `get_keyboard_idle_ms`, `get_last_keypress_timestamp` commands | Keyboard idle time calculation + Wall typing detection |
 
 ### `Option<bool>` Initial State
 
@@ -394,7 +394,7 @@ The polling thread tracks `last_state: Option<bool> = None`, ensuring the **firs
 The analysis thread enforces a **1 Hz timer gate** via `recv_timeout(1000 ms)`:
 
 - **Keystroke arrives within 1 s:** Features accumulated; `engine.update()` called only if ≥ 1 s elapsed since last HMM step.
-- **Timeout:** `make_silence_observation()` generates a synthetic silence observation.
+- **Timeout:** `make_silence_observation()` generates a synthetic silence observation, processed via `engine.update_silence()` — a variant that runs the HMM forward step **without updating the EWMA**, preventing idle-period drift toward high-Friction bins.
 
 This ensures exactly **one HMM forward step per second**, making the EMA time constant τ = 1/α ≈ **4 seconds** precise regardless of typing speed.
 
@@ -415,16 +415,17 @@ This replaces the previous DeviceMotion shake detection, which required iOS perm
 
 ### Monk Mode (v2.7)
 
-The Dashboard includes a **Monk Mode toggle**. When activated (ON), the Wall auto-intervention (Lv2) is **disabled** — `stuck > 0.70` will no longer trigger the full-screen block. The Nudge (Lv1 red vignette) remains active. The toggle emits `monk-mode-change` via Tauri events, ensuring both the main and overlay windows stay in sync.
+The Dashboard includes a **Monk Mode toggle**. When activated (ON), the Wall auto-intervention (Lv2) is **disabled** — `stuck > 0.70` will no longer trigger the full-screen block. The Nudge (Lv1 red vignette) remains active. The toggle emits `monk-mode-changed` via Tauri events, ensuring both the main and overlay windows stay in sync.
 
 ### Session Start Screen (v2.8)
 
 On launch, a **start screen** is displayed with the "Generative Struggle Engine" title and a "開始する" (Start) button. The keyboard hook and analysis threads are already running in the background but idle. When the user clicks the start button:
 
-1. `start_session` IPC command resets the `CognitiveStateEngine` (HMM probabilities, EWMA, backspace streak) and the `FeatureExtractor` (buffer, flight times)
-2. A `LogEntry::SessionStart` marker is written to the NDJSON log
-3. The analysis thread's pending event queue is flushed via a `ResetSignal` atomic
-4. The Dashboard and state polling begin
+1. `SessionActive` flag is set to `true` (enables the analysis thread to process events immediately)
+2. `start_session` IPC command resets the `CognitiveStateEngine` (HMM probabilities, EWMA, backspace streak)
+3. `ResetSignal` atomic triggers the analysis thread to reset the `FeatureExtractor` (buffer, flight times) — the event queue is **not** drained, preserving keystrokes typed during the reset window
+4. A `LogEntry::SessionStart` marker is written to the NDJSON log
+5. The Dashboard and state polling begin
 
 The overlay window continues to poll cognitive state regardless of the start screen state.
 
@@ -592,4 +593,4 @@ Research prototype. All rights reserved.
 
 ---
 
-*Last updated: 2026-03-04*
+*Last updated: 2026-03-05*
