@@ -348,7 +348,7 @@ The input source ID is checked for `"inputmethod.Japanese"` (covers Apple IME, G
 | Context | `IME_OPEN` | β_F1 (ms) | β_F3 | β_F4 | β_F5 | β_F6 |
 | --- | --- | --- | --- | --- | --- | --- |
 | **β_coding** (A mode) | `false` | 150 | 0.06 | 5.0 | 2.0 | 0.08 |
-| **β_writing** (あ/カ mode) | `true` | 220 | 0.08 | 2.0 | 4.0 | 0.12 |
+| **β_writing** (あ/カ mode) | `true` | 130 | 0.05 | 3.0 | 2.0 | 0.12 |
 
 ---
 
@@ -394,7 +394,7 @@ The polling thread tracks `last_state: Option<bool> = None`, ensuring the **firs
 The analysis thread enforces a **1 Hz timer gate** via `recv_timeout(1000 ms)`:
 
 - **Keystroke arrives within 1 s:** Features accumulated; `engine.update()` called only if ≥ 1 s elapsed since last HMM step.
-- **Timeout:** `make_silence_observation()` generates a synthetic silence observation, processed via `engine.update_silence()` — a variant that runs the HMM forward step **without updating the EWMA**, preventing idle-period drift toward high-Friction bins.
+- **Timeout:** `make_silence_observation()` generates a synthetic silence observation, processed via `engine.update_silence()` — a variant that runs the HMM forward step with a **low EWMA alpha (0.05)** instead of the normal 0.30, preventing rapid drift toward high-Friction bins while still allowing observation bins to gradually shift toward low-Engagement during prolonged silence (time constant ≈ 20 s).
 
 This ensures exactly **one HMM forward step per second**, making the EMA time constant τ = 1/α ≈ **4 seconds** precise regardless of typing speed.
 
@@ -593,4 +593,4 @@ Research prototype. All rights reserved.
 
 ---
 
-*Last updated: 2026-03-05*
+*Last updated: 2026-03-06*

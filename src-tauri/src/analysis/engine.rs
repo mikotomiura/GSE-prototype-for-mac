@@ -253,13 +253,15 @@ impl CognitiveStateEngine {
         const BETA_CODING_F6: f64 = 0.08;  // Pause-after-delete rate
 
         // β_writing: reference values for Japanese IME writing input
-        // Japanese romaji→kana composition is slower than direct ASCII entry.
-        // Correction pattern differs: kanji selection uses arrow keys, not Backspace.
-        const BETA_WRITING_F1: f64 = 220.0; // Flight Time median (ms) — slower
-        const BETA_WRITING_F3: f64 = 0.08;  // Correction rate — slightly lower (IME handles errors)
-        const BETA_WRITING_F4: f64 = 2.0;   // Burst length — shorter (composition in segments)
-        const BETA_WRITING_F5: f64 = 4.0;   // Pause count — more pauses for thinking/selection
-        const BETA_WRITING_F6: f64 = 0.12;  // Pause-after-delete rate
+        // Calibrated from real session data (gse_20260305): actual medians are
+        // f1≈100-130ms, f3≈3-10%, f4≈2.8-3.5, f5≈1-4 pauses/30s.
+        // Previous values (f1=220, f5=4.0) were too high, causing phi() to return 0
+        // for nearly all observations → observation collapse to a single HMM bin.
+        const BETA_WRITING_F1: f64 = 130.0; // Flight Time median (ms) — actual ~100-130ms
+        const BETA_WRITING_F3: f64 = 0.05;  // Correction rate — actual ~3-10%
+        const BETA_WRITING_F4: f64 = 3.0;   // Burst length — actual ~2.8-3.5
+        const BETA_WRITING_F5: f64 = 2.0;   // Pause count — actual ~1-4 per 30s
+        const BETA_WRITING_F6: f64 = 0.12;  // Pause-after-delete rate (unchanged)
 
         let (beta_f1, beta_f3, beta_f4, beta_f5, beta_f6) = if ime_open {
             (BETA_WRITING_F1, BETA_WRITING_F3, BETA_WRITING_F4, BETA_WRITING_F5, BETA_WRITING_F6)
@@ -400,9 +402,9 @@ impl CognitiveStateEngine {
     }
 
     /// 無入力期間（サイレンス）用のHMM更新。
-    /// 通常の `update()` と異なり、EWMA を更新しない。
-    /// これにより、無入力時にEWMAが高Friction方向にドリフトすることを防ぐ。
-    /// HMMの遷移確率による状態更新は行うため、長時間無入力→Incubation/Stuck 検出は維持される。
+    /// 通常の `update()` (α=0.3) と異なり、低α (0.05) でEWMAを緩やかに更新する。
+    /// これにより急激なドリフトは防ぎつつ、長時間サイレンスで
+    /// 低Engagement方向へ観測ビンが移動し、Incubation遷移を可能にする。
     pub fn update_silence(&self, features: &Features, ime_open: bool) {
         if self.get_paused() {
             return;
@@ -410,15 +412,24 @@ impl CognitiveStateEngine {
 
         let (raw_x, raw_y) = self.calculate_latent_axes(features, ime_open);
 
-        // EWMA を更新せず、現在の EWMA 値を読み取るのみ
+        // サイレンス中は低αでEWMAを緩やかに更新する。
+        // 完全凍結だと make_silence_observation() の合成特徴量（f5増加等）が
+        // 無視され、obs ビンがタイピング中と同じ値に固定されてしまう。
+        // α=0.05: 時定数 ≈ 20更新 ≈ 20秒。急激なドリフトは防ぎつつ、
+        // 長時間サイレンスで徐々に低Engagement方向へ移動させる。
         let (x, y) = match self.axes_ewma.lock() {
-            Ok(ewma) => *ewma,
-            Err(poisoned) => *poisoned.into_inner(),
+            Ok(mut ewma) => {
+                ewma.0 = 0.05 * raw_x + 0.95 * ewma.0;
+                ewma.1 = 0.05 * raw_y + 0.95 * ewma.1;
+                (ewma.0, ewma.1)
+            }
+            Err(poisoned) => {
+                let mut ewma = poisoned.into_inner();
+                ewma.0 = 0.05 * raw_x + 0.95 * ewma.0;
+                ewma.1 = 0.05 * raw_y + 0.95 * ewma.1;
+                (ewma.0, ewma.1)
+            }
         };
-
-        // サイレンス観測のビン計算には現在のEWMA位置を使用
-        // （raw値はサイレンスの極端値なので、EWMA位置の方がHMM観測として適切）
-        let _ = (raw_x, raw_y); // raw値は使用しない（ドリフト防止）
         let x_bin = (x * 5.0).floor().min(4.0) as usize;
         let y_bin = (y * 5.0).floor().min(4.0) as usize;
         let obs = x_bin * 5 + y_bin;

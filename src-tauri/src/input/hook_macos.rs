@@ -118,6 +118,19 @@ fn macos_vk_to_vk(mac_vk: u64) -> u32 {
         0x67 => 0x7A, // kVK_F11
         0x6F => 0x7B, // kVK_F12
 
+        // ── Symbols / punctuation ─────────────────────────────────────────
+        0x18 => 0xBB, // kVK_ANSI_Equal          → VK_OEM_PLUS
+        0x1B => 0xBD, // kVK_ANSI_Minus          → VK_OEM_MINUS
+        0x21 => 0xDB, // kVK_ANSI_LeftBracket    → VK_OEM_4
+        0x1E => 0xDD, // kVK_ANSI_RightBracket   → VK_OEM_6
+        0x27 => 0xDE, // kVK_ANSI_Quote          → VK_OEM_7
+        0x29 => 0xBA, // kVK_ANSI_Semicolon      → VK_OEM_1
+        0x2A => 0xDC, // kVK_ANSI_Backslash      → VK_OEM_5
+        0x2B => 0xBC, // kVK_ANSI_Comma          → VK_OEM_COMMA
+        0x2C => 0xBF, // kVK_ANSI_Slash          → VK_OEM_2
+        0x2F => 0xBE, // kVK_ANSI_Period         → VK_OEM_PERIOD
+        0x32 => 0xC0, // kVK_ANSI_Grave          → VK_OEM_3
+
         // ── JIS IME toggle keys (CGKeyCode values for JIS keyboards) ──────
         0x66 => VK_DBE_ALPHANUMERIC, // kVK_JIS_Eisu → 英数 (alphanumeric)
         0x68 => VK_KANJI,            // kVK_JIS_Kana → かな toggle
