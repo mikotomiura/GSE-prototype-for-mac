@@ -102,6 +102,13 @@ unsafe extern "C" fn tis_query_main_thread(ctx: *mut c_void) {
 ///
 /// Safe to call from **any thread** — internally dispatches to the main GCD queue
 /// (required by HIToolbox) via `dispatch_sync_f` and blocks until the result is ready.
+///
+/// FIXME: macOS の per-app input source switching (デフォルト設定) の仕様上、
+/// バックグラウンドプロセスから TISCopyCurrentKeyboardInputSource を呼ぶと
+/// 前面アプリではなく GSE プロセス自身の入力ソース（常に英数 = ABC）を返す。
+/// これにより ANSI キーボードで Cmd+Space 等で IME を切り替えても IME_OPEN が
+/// 検知されないエッジケースが存在する（JIS キーボードでは物理キー検出で問題なし）。
+/// 将来的には CGEvent フラグや Accessibility API による代替検出が必要。
 pub fn is_japanese_ime_open() -> bool {
     let mut ctx = TisQueryCtx { result: false };
     unsafe {

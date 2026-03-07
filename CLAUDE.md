@@ -47,8 +47,8 @@ All inter-thread communication uses `crossbeam` bounded channels. Shared state u
 ### Rust Backend (`src-tauri/src/`)
 
 - **`lib.rs`** — Tauri setup, thread orchestration, 8 IPC commands (`get_cognitive_state`, `get_keyboard_idle_ms`, `get_hook_status`, `start_wall_server`, `stop_wall_server`, `get_session_file`, `start_session`, `quit_app`)
-- **`analysis/engine.rs`** — HMM engine: 3 states × 26 observation bins (25 natural + 1 backspace penalty), dual semantic latent axes (Friction, Engagement), EWMA smoothing (α=0.3), hysteresis display layer (α=0.40/0.60)
-- **`analysis/features.rs`** — F1-F6 feature extraction over 30-second sliding window, `phi(x, beta)` normalization (κ=2.0), `make_silence_observation()` for idle periods
+- **`analysis/engine.rs`** — HMM engine: 3 states × 26 observation bins (25 natural + 1 backspace penalty), dual semantic latent axes (Friction, Engagement), EWMA smoothing (update: α=0.3, update_silence: α=0.15 / 0.25 dynamic), hysteresis display layer (α=0.40/0.60)
+- **`analysis/features.rs`** — F1-F6 feature extraction over 30-second sliding window, `phi(x, β) = ((x − β) / (2β)).clamp(0, 1)` linear normalization, `make_silence_observation()` for idle periods
 - **`input/hook.rs`** — Shared atomics (`IME_OPEN`, `IME_ACTIVE`, `IME_COMPOSING`, `HOOK_ACTIVE`, `EVENT_SENDER`). Uses `#[path = "hook_macos.rs"]` for platform dispatch
 - **`input/hook_macos.rs`** — CGEventTap implementation, macOS VK→Windows VK mapping (~60 codes), Input Monitoring permission flow, **IME composition state machine** (tracks COMPOSING→CANDIDATING transitions via keystroke patterns)
 - **`input/ime.rs`** — `ImeMonitor` reads `IME_ACTIVE` from hook state machine + `spawn_ime_open_polling_thread()` with JIS key vs ANSI keyboard detection paths
@@ -69,10 +69,11 @@ Two Tauri windows: `main` (Dashboard) and `overlay` (transparent, always-on-top,
 
 - Engine is 1Hz-calibrated: `engine.update()` must be called at most once per second
 - All VK codes are normalized to Windows equivalents internally (macOS CGKeyCode → Windows VK in `macos_vk_to_vk()`)
-- Backspace streak ≥ 8 triggers penalty bin (obs=25) with separate hysteresis alpha (0.60)
+- Backspace streak ≥ 14 triggers penalty bin (obs=25) with separate hysteresis alpha (0.60)
 - Dual baseline: `beta_coding` (IME off) vs `beta_writing` (IME on) with different reference values
 - Emission table entries have baked-in minimum of 0.01 (no runtime additive floor)
-- `force_flow_state()` resets to Flow when IME candidate window is active
+- IME candidate window detection pauses HMM via `set_paused()` (probability is frozen, not reset)
+- EWMA α varies by update path: `update()` α=0.3, `update_silence()` α=0.15 (default) or α=0.25 (silence ≥ 15s)
 
 ## Critical Constraints
 

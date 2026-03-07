@@ -135,15 +135,18 @@ fn start_session(
     active: State<SessionActive>,
     log: State<Arc<Mutex<LogState>>>,
 ) {
-    // 1. セッションをアクティブにする（分析スレッドの処理を開始）
-    //    先にアクティブにすることで、リセットシグナル処理後すぐに打鍵を受け付けられる
-    active.0.store(true, Ordering::Release);
-
-    // 2. HMM を初期値にリセット
+    // 1. HMM を初期値にリセット
     engine.reset();
 
-    // 3. 分析スレッドへリセットシグナルを送信
+    // 2. 分析スレッドへリセットシグナルを送信 (MUST be before session_active)
+    //    Release ordering: reset=true が active=true より先にグローバルに可視となる。
+    //    分析スレッドは active=true を Acquire で検知した時点で、reset=true も必ず可視。
+    //    旧順序 (active→reset) では、分析スレッドが active=true を見た瞬間に
+    //    reset=true が未反映で、前セッションの長い沈黙が初回HMM更新に混入していた。
     reset.0.store(true, Ordering::Release);
+
+    // 3. セッションをアクティブにする（分析スレッドの処理を開始）
+    active.0.store(true, Ordering::Release);
 
     // 4. セッション開始マーカーをログに記録
     let timestamp = SystemTime::now()
@@ -306,23 +309,29 @@ pub fn run() {
     let session_active_state = SessionActive(session_active);
 
     // 分析スレッド
-    // イベント駆動 (rx.recv) の代わりに recv_timeout を使い、
-    // 無入力期間中もタイマーでHMMを継続更新する。
-    // これにより長時間ポーズ (Incubation/Stuck) を検出できる。
     //
-    // 【Time Dilation バグ修正】
-    // engine.update() を打鍵ごとに呼ぶと、HMMの遷移確率(self=0.80→脱出5秒)と
-    // display_probs EMA(α=0.25→時定数4秒)が1Hz前提で設計されているため、
-    // 高速タイピング時に時間が「加速」してFLOWに急収束してしまう。
-    // 修正: last_engine_update で1Hzゲートを設け、打鍵頻度に関わらず
-    // engine.update() は最大1回/秒だけ呼び出す。
-    // extractor.process_event() は引き続き全打鍵で呼び出しバッファを最新に保つ。
+    // 【アーキテクチャ v2 (Fix 1/2/4)】
+    // 旧: recv_timeout(1000ms) でイベント駆動 + タイムアウト時にサイレンス処理。
+    //   問題: 1Hzゲートがキーpressイベントに依存し、最大9.6秒のfeatギャップが発生。
+    //         タイムアウト時に make_silence_observation() が30秒ウィンドウの実データを無視。
+    //         1打鍵で silence_secs が即座にリセットされ合成摩擦値が消失。
+    //
+    // 新: 動的 recv_timeout(until_gate) + 独立1Hzゲート。
+    //   - イベント処理と1Hz推論を完全分離。タイムアウトは次の1Hzマークまでの残り時間。
+    //   - 1Hzゲートでは calculate_features() を優先し、f1>0（実データ有）なら
+    //     engine.update() を使用。f1=0（バッファ空）の場合のみ silence obs にフォールバック。
+    //   - 深い沈黙（>10秒）からの復帰は3回以上の連続打鍵を要求（silence-break protection）。
     thread::spawn(move || {
         tracing::info!("Analysis thread started");
         let mut extractor = FeatureExtractor::new(600);
         let mut last_event_time = Instant::now();
-        // 初期値を1秒前に設定し、最初のキーストロークで即座に推論できるようにする
-        let mut last_engine_update = Instant::now() - Duration::from_secs(1);
+        // 次回エンジン更新予定時刻。絶対時刻ベースで += 1s インクリメントし、
+        // イベント処理遅延によるドリフトを防ぐ。
+        let mut next_engine_update = Instant::now();
+        // Fix 2: 深い沈黙からの復帰に3回以上の連続打鍵を要求するカウンター。
+        // 1打鍵で last_event_time がリセットされ、合成摩擦値 (f3, f6) が
+        // 即座に消失する問題を防止する。
+        let mut presses_since_silence: u32 = 0;
 
         loop {
             // リセットシグナルチェック: start_session から送信される
@@ -330,10 +339,17 @@ pub fn run() {
                 tracing::info!("Analysis thread: reset signal received");
                 extractor.reset();
                 last_event_time = Instant::now();
-                last_engine_update = Instant::now() - Duration::from_secs(1);
+                next_engine_update = Instant::now();
+                presses_since_silence = 0;
             }
 
-            match rx.recv_timeout(Duration::from_millis(1000)) {
+            // Fix 4: 動的タイムアウト — 次の1Hzマークまたはイベント到着で起床。
+            // 旧 recv_timeout(1000ms) ではキーイベントのタイミングに1Hzゲートが依存し、
+            // 最大数秒のfeatギャップが発生していた。動的タイムアウトにより、
+            // イベントの有無に関わらず正確な1Hz間隔で推論が実行される。
+            let until_gate = next_engine_update.saturating_duration_since(Instant::now());
+
+            match rx.recv_timeout(until_gate) {
                 Ok(event) => {
                     // セッション未開始 — イベントをドレイン（チャネル詰まり防止）するが処理しない
                     if !session_active_for_thread.load(Ordering::Acquire) {
@@ -349,7 +365,6 @@ pub fn run() {
                         continue;
                     }
 
-                    last_event_time = Instant::now();
                     extractor.process_event(event);
 
                     // キーイベントをログ記録（全打鍵を記録、推論頻度とは独立）
@@ -364,106 +379,149 @@ pub fn run() {
                         // engine.update() は1Hzだがストリーク検知は全打鍵で正確にカウントする。
                         engine_for_thread.register_keystroke(event.vk_code);
 
-                        // 1Hzゲート: 前回のengine.update()から1秒以上経過した場合のみ推論を実行。
-                        // HMMとEMAは1Hz前提で設計されているため、これより高頻度で呼ぶと
-                        // 時間が加速したように振る舞う（Time Dilation）。
-                        if last_engine_update.elapsed() >= Duration::from_secs(1) {
-                            last_engine_update = Instant::now();
-
-                            // IMEモード（あ/A）はポーリングスレッドが100ms毎に更新するAtomicBoolを読む。
-                            let ime_open = input::hook::IME_OPEN.load(Ordering::Relaxed);
-
-                            let features = extractor.calculate_features();
-                            engine_for_thread.update(&features, ime_open);
-
-                            // 特徴量 + 状態確率をログ記録
-                            let state_probs = engine_for_thread.get_current_state();
-                            let p_flow = state_probs
-                                .get(&CognitiveState::Flow)
-                                .copied()
-                                .unwrap_or(0.0);
-                            let p_inc = state_probs
-                                .get(&CognitiveState::Incubation)
-                                .copied()
-                                .unwrap_or(0.0);
-                            let p_stuck = state_probs
-                                .get(&CognitiveState::Stuck)
-                                .copied()
-                                .unwrap_or(0.0);
-
-                            let _ = log_tx_analysis.try_send(LogEntry::Feat {
-                                timestamp: event.timestamp,
-                                f1: features.f1_flight_time_median,
-                                f2: features.f2_flight_time_variance,
-                                f3: features.f3_correction_rate,
-                                f4: features.f4_burst_length,
-                                f5: features.f5_pause_count,
-                                f6: features.f6_pause_after_del_rate,
-                                p_flow,
-                                p_inc,
-                                p_stuck,
-                            });
+                        // Fix 2: silence-break protection.
+                        // 深い沈黙（>10秒）中は、単発キーで last_event_time をリセットせず、
+                        // 3回以上の連続打鍵で初めてリセットする。
+                        // これにより、Stuck状態の合成摩擦値 (f3, f6) が1打鍵で消失するのを防ぐ。
+                        if last_event_time.elapsed() > Duration::from_secs(10) {
+                            presses_since_silence += 1;
+                            if presses_since_silence >= 3 {
+                                last_event_time = Instant::now();
+                                presses_since_silence = 0;
+                            }
+                        } else {
+                            last_event_time = Instant::now();
+                            presses_since_silence = 0;
                         }
+                    } else if last_event_time.elapsed() <= Duration::from_secs(10) {
+                        // Release events: 深い沈黙中でなければタイマーを更新
+                        last_event_time = Instant::now();
                     }
                 }
 
                 Err(RecvTimeoutError::Timeout) => {
-                    // セッション未開始 — サイレンス処理もスキップ
-                    if !session_active_for_thread.load(Ordering::Acquire) {
-                        continue;
-                    }
-                    // リセット保留中 — リセット前の古いサイレンス観測をスキップ
-                    // (recv_timeout 中に start_session が呼ばれた場合の競合回避)
-                    if reset_signal_for_thread.load(Ordering::Acquire) {
-                        continue;
-                    }
-                    // 無入力期間の検出: サイレンス特徴量でHMMを更新する。
-                    // recv_timeout(1000ms) のタイムアウトにより自然に ~1Hz となる。
-                    if engine_for_thread.get_paused() {
-                        continue;
-                    }
-                    let silence_secs = last_event_time.elapsed().as_secs_f64();
-                    if let Some(sf) = extractor.make_silence_observation(silence_secs) {
-                        // サイレンス中も現在のIMEモードを使用
-                        let ime_open = input::hook::IME_OPEN.load(Ordering::Relaxed);
-                        engine_for_thread.update_silence(&sf, ime_open);
-                        last_engine_update = Instant::now();
-
-                        let state_probs = engine_for_thread.get_current_state();
-                        let p_flow = state_probs
-                            .get(&CognitiveState::Flow)
-                            .copied()
-                            .unwrap_or(0.0);
-                        let p_inc = state_probs
-                            .get(&CognitiveState::Incubation)
-                            .copied()
-                            .unwrap_or(0.0);
-                        let p_stuck = state_probs
-                            .get(&CognitiveState::Stuck)
-                            .copied()
-                            .unwrap_or(0.0);
-
-                        let now_ts = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64;
-
-                        let _ = log_tx_analysis.try_send(LogEntry::Feat {
-                            timestamp: now_ts,
-                            f1: sf.f1_flight_time_median,
-                            f2: sf.f2_flight_time_variance,
-                            f3: sf.f3_correction_rate,
-                            f4: sf.f4_burst_length,
-                            f5: sf.f5_pause_count,
-                            f6: sf.f6_pause_after_del_rate,
-                            p_flow,
-                            p_inc,
-                            p_stuck,
-                        });
-                    }
+                    // タイムアウト: 1Hzゲートへ直接フォールスルー
                 }
 
                 Err(RecvTimeoutError::Disconnected) => break,
+            }
+
+            // ── 1Hz ゲート (Fix 4: イベント到着と独立) ──────────────────────
+            // セッション・ポーズガード
+            if !session_active_for_thread.load(Ordering::Acquire) {
+                continue;
+            }
+            if reset_signal_for_thread.load(Ordering::Acquire) {
+                continue;
+            }
+            if engine_for_thread.get_paused() {
+                continue;
+            }
+
+            let now = Instant::now();
+            if now >= next_engine_update {
+                // 絶対時刻ベースで1Hzを維持（ドリフト防止）
+                next_engine_update += Duration::from_secs(1);
+                // スレッドが長時間ブロックされた場合のキャッチアップ
+                if next_engine_update <= now {
+                    next_engine_update = now + Duration::from_secs(1);
+                }
+
+                // IMEモード（あ/A）はポーリングスレッドが100ms毎に更新するAtomicBoolを読む。
+                let ime_open = input::hook::IME_OPEN.load(Ordering::Relaxed);
+                let silence_secs = last_event_time.elapsed().as_secs_f64();
+
+                // Fix 1: バッファの実データを優先し、空の場合のみサイレンス観測にフォールバック。
+                // 直近30秒に有効な打鍵データ (f1 > 0) がある場合は実特徴量で HMM を更新する。
+                // これにより、短いポーズ（2-3秒）で30秒ウィンドウのデータが無視される問題を解消。
+                let mut features = extractor.calculate_features();
+
+                // Fix 5: 現在進行形の沈黙をF5に加算する。
+                // calculate_features() は30秒ウィンドウ内の「完了済みギャップ」しかカウントしない。
+                // 例: 12秒間手が止まっていてもF5=1.0にしかならず、進行中の行き詰まりが
+                // 摩擦として評価されない。silence_secs / 2.0 を加算し、
+                // 現在のギャップに相当するポーズ回数をF5に反映する。
+                if silence_secs >= 2.0 && features.f1_flight_time_median > 0.0 {
+                    features.f5_pause_count += silence_secs / 2.0;
+                }
+
+                // Fix 6: 深い沈黙時に F3/F6 の摩擦フロアを動的に適用する。
+                // 30秒ウィンドウに過去の順調なタイピングデータが残っていると、
+                // F3(修正率)とF6(削除後停止率)が低いままで Friction 軸が上がらず
+                // Stuck 領域（x_bin≥3）に到達できない。
+                // 沈黙時間に応じて段階的にフロア値を引き上げ、
+                // 「現在手が止まっている」事実を Friction に反映する。
+                if silence_secs >= 8.0 && features.f1_flight_time_median > 0.0 {
+                    let f6_floor = ((silence_secs - 8.0) / 25.0).clamp(0.0, 0.50);
+                    let f3_floor = ((silence_secs - 10.0) / 30.0).clamp(0.0, 0.40);
+                    features.f6_pause_after_del_rate = features.f6_pause_after_del_rate.max(f6_floor);
+                    features.f3_correction_rate = features.f3_correction_rate.max(f3_floor);
+                }
+
+                let (log_features, diag) = if features.f1_flight_time_median > 0.0
+                    && silence_secs < 5.0
+                {
+                    // 実打鍵データがウィンドウ内にあり、直近5秒以内に打鍵あり
+                    // — 通常更新 (α=0.3 EWMA)
+                    let d = engine_for_thread.update(&features, ime_open);
+                    (features, d)
+                } else if features.f1_flight_time_median > 0.0 {
+                    // 30秒ウィンドウに実データはあるが、5秒以上手が止まっている。
+                    // 沈黙の深さに応じた動的α (0.15〜0.25) で更新する。
+                    let d = engine_for_thread.update_silence(&features, ime_open, silence_secs);
+                    (features, d)
+                } else if let Some(sf) = extractor.make_silence_observation(silence_secs) {
+                    // バッファ空 — サイレンス観測にフォールバック
+                    let d = engine_for_thread.update_silence(&sf, ime_open, silence_secs);
+                    (sf, d)
+                } else {
+                    // silence < 2.0s かつバッファ空 — スキップ
+                    continue;
+                };
+
+                // 特徴量 + 状態確率をログ記録
+                let state_probs = engine_for_thread.get_current_state();
+                let p_flow = state_probs
+                    .get(&CognitiveState::Flow)
+                    .copied()
+                    .unwrap_or(0.0);
+                let p_inc = state_probs
+                    .get(&CognitiveState::Incubation)
+                    .copied()
+                    .unwrap_or(0.0);
+                let p_stuck = state_probs
+                    .get(&CognitiveState::Stuck)
+                    .copied()
+                    .unwrap_or(0.0);
+
+                let now_ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                // diagnostics が None (paused 中の early return) の場合のデフォルト値
+                let (raw_x, raw_y, ewma_x, ewma_y, obs, alpha) = match diag {
+                    Some(d) => (d.raw_x, d.raw_y, d.ewma_x, d.ewma_y, d.obs, d.alpha),
+                    None => (0.0, 0.0, 0.0, 0.0, 0, 0.0),
+                };
+
+                let _ = log_tx_analysis.try_send(LogEntry::Feat {
+                    timestamp: now_ts,
+                    f1: log_features.f1_flight_time_median,
+                    f3: log_features.f3_correction_rate,
+                    f4: log_features.f4_burst_length,
+                    f5: log_features.f5_pause_count,
+                    f6: log_features.f6_pause_after_del_rate,
+                    p_flow,
+                    p_inc,
+                    p_stuck,
+                    raw_x,
+                    raw_y,
+                    ewma_x,
+                    ewma_y,
+                    obs,
+                    alpha,
+                });
             }
         }
     });
@@ -512,10 +570,10 @@ pub fn run() {
             }
 
             input::hook::IME_ACTIVE.store(active, Ordering::Release);
+            // IME候補ウィンドウ表示中はHMM推論を一時停止する。
+            // 確率はリセットせず直前の状態を維持する。
+            // 候補選択中の認知状態（Incubation等）を破壊しない。
             engine_for_monitor.set_paused(active);
-            if active {
-                engine_for_monitor.force_flow_state();
-            }
             thread::sleep(std::time::Duration::from_millis(100));
         }
     });

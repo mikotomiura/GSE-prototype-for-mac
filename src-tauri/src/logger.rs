@@ -15,11 +15,10 @@ pub enum LogEntry {
         timestamp: u64,
         is_press: bool,
     },
-    /// 特徴量 + HMM状態確率 (分析スレッドから)
+    /// 特徴量 + HMM状態確率 + 内部診断情報 (分析スレッドから)
     Feat {
         timestamp: u64,
         f1: f64,
-        f2: f64,
         f3: f64,
         f4: f64,
         f5: f64,
@@ -27,6 +26,13 @@ pub enum LogEntry {
         p_flow: f64,
         p_inc: f64,
         p_stuck: f64,
+        // HMM内部状態 (診断用)
+        raw_x: f64,
+        raw_y: f64,
+        ewma_x: f64,
+        ewma_y: f64,
+        obs: usize,
+        alpha: f64,
     },
     /// IME入力モードの切替イベント
     /// on=true  → 日本語入力モード (あ/カ) に移行 → β_writing を使用
@@ -110,7 +116,6 @@ impl SessionLogger {
                             LogEntry::Feat {
                                 timestamp,
                                 f1,
-                                f2,
                                 f3,
                                 f4,
                                 f5,
@@ -118,11 +123,18 @@ impl SessionLogger {
                                 p_flow,
                                 p_inc,
                                 p_stuck,
+                                raw_x,
+                                raw_y,
+                                ewma_x,
+                                ewma_y,
+                                obs,
+                                alpha,
                             } => {
                                 let _ = writeln!(
                                     writer,
-                                    r#"{{"type":"feat","t":{},"f1":{:.2},"f2":{:.2},"f3":{:.4},"f4":{:.2},"f5":{:.1},"f6":{:.4},"p_flow":{:.4},"p_inc":{:.4},"p_stuck":{:.4}}}"#,
-                                    timestamp, f1, f2, f3, f4, f5, f6, p_flow, p_inc, p_stuck,
+                                    r#"{{"type":"feat","t":{},"f1":{:.2},"f3":{:.4},"f4":{:.2},"f5":{:.1},"f6":{:.4},"p_flow":{:.4},"p_inc":{:.4},"p_stuck":{:.4},"raw_x":{:.4},"raw_y":{:.4},"ewma_x":{:.4},"ewma_y":{:.4},"obs":{},"alpha":{:.2}}}"#,
+                                    timestamp, f1, f3, f4, f5, f6, p_flow, p_inc, p_stuck,
+                                    raw_x, raw_y, ewma_x, ewma_y, obs, alpha,
                                 );
                             }
                             LogEntry::ImeState { timestamp, on } => {

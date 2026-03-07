@@ -12,7 +12,7 @@ use core_graphics::event::{
     EventField,
 };
 
-use crate::analysis::features::InputEvent;
+use crate::analysis::features::{InputEvent, is_typing_key};
 use super::{
     EVENT_SENDER, IME_ACTIVE, IME_COMPOSING, IME_OPEN, IME_STATE_DIRTY,
     JIS_KEYBOARD_SEEN, LAST_KEYSTROKE_TIMESTAMP, POLL_WAKE_TX,
@@ -157,12 +157,21 @@ fn handle_event(event_type: CGEventType, event: &CGEvent) {
     let mac_vk = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u64;
     let vk_code = macos_vk_to_vk(mac_vk);
 
+    // macOS キーリピート検出: KeyDown のみ連射され KeyUp は最後の1回だけ。
+    // リピートイベントは flight time 計算を狂わせるため InputEvent でマークする。
+    let is_repeat = is_press
+        && event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0;
+
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
 
-    // Update last keystroke timestamp for idle detection
+    // Update last keystroke timestamp for idle detection.
+    // NOTE: 矢印キー等の非文字キーも LAST_KEYSTROKE_TIMESTAMP を更新するが、
+    // HMM（分析チャネル）には送られずサイレンス扱いとなる。そのため
+    // 「UI 上は Active だが HMM 推論上は Incubation（沈黙）」という
+    // 意図的な状態乖離が発生し得る（非文字キーだけの操作は稀なため許容）。
     LAST_KEYSTROKE_TIMESTAMP.store(timestamp, Ordering::Relaxed);
 
     // IME mode tracking via JIS physical IME keys.
@@ -228,13 +237,27 @@ fn handle_event(event_type: CGEventType, event: &CGEvent) {
         }
     }
 
-    // Send keystroke event to analysis thread (lock-free, non-blocking)
-    if let Some(sender) = EVENT_SENDER.get() {
-        let _ = sender.try_send(InputEvent {
-            vk_code,
-            timestamp,
-            is_press,
-        });
+    // Send keystroke event to analysis thread (lock-free, non-blocking).
+    // Filter at hook level: skip key repeats (cause Press/Release imbalance and
+    // inflate backspace streak) and non-typing keys (arrows, function keys, IME
+    // toggles — don't affect typing rhythm). IME tracking and
+    // LAST_KEYSTROKE_TIMESTAMP are already handled above.
+    //
+    // NOTE: キーリピート除外により、Backspace 長押し（hold-to-delete）は Press 1回
+    // + Release 1回のみ分析スレッドに届く。結果として:
+    //   - register_keystroke() の BS ストリークは長押しでは増加しない（閾値14に未達）
+    //   - F3（修正率）も長押し削除を1回としかカウントしない
+    // これは「長押し = 意図的な一括削除 ≠ フラストレーション」という設計判断に基づく。
+    // 連打（タップ連射）のみが Stuck シグナルとして検出される。
+    if !is_repeat && is_typing_key(vk_code) {
+        if let Some(sender) = EVENT_SENDER.get() {
+            let _ = sender.try_send(InputEvent {
+                vk_code,
+                timestamp,
+                is_press,
+                is_repeat,
+            });
+        }
     }
 
     // Wake the IME polling thread on every keypress

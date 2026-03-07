@@ -66,7 +66,6 @@ The three states are grounded in established cognitive science literature:
 │                                      │  ── 1 Hz Timer Gate ──   │   │
 │                                      │  FeatureExtractor        │   │
 │                                      │    F1 flight-time median │   │
-│                                      │    F2 flight-time var.   │   │
 │                                      │    F3 correction rate    │   │
 │                                      │    F4 burst length       │   │
 │                                      │    F5 pause count        │   │
@@ -104,7 +103,7 @@ Main Thread (Tauri event loop + GCD main queue for TIS)
     │       │ bounded(1) wake channel → IME Polling Thread
     ├─ Analysis Thread     ← recv_timeout(1 s) → 1 Hz timer gate; HMM update ≤ 1×/sec
     │       │ Arc<Mutex<CognitiveStateEngine>> (Tauri managed state)
-    │       │ Synthetic Friction: silence ≥ 20 s → ramps F6/F3 toward Stuck
+    │       │ Synthetic Friction: silence ≥ 8 s → ramps F6/F3 toward Stuck
     ├─ IME Monitor Thread  ← reads IME_ACTIVE every 100 ms (set by Hook Thread state machine); 8 s failsafe auto-reset
     ├─ IME Polling Thread  ← recv_timeout(100 ms) wake; TIS dispatch_sync_f to main queue
     │
@@ -167,8 +166,7 @@ All features are computed over a **30-second sliding window** of raw keystroke e
 
 | Feature | Symbol | Definition | Cognitive Signal |
 |---|---|---|---|
-| Flight Time Median | **F1** | Median of key-release → key-press intervals (ms), last 5 samples | Typing speed — lower = Flow |
-| Flight Time Variance | **F2** | Variance of flight times within 30-second window | Rhythmic consistency |
+| Flight Time Median | **F1** | Median of key-release → key-press intervals (ms), 30-second sliding window | Typing speed — lower = Flow |
 | Correction Rate | **F3** | (Backspace + Delete presses) / total presses | Error frequency — higher = Stuck |
 | Burst Length | **F4** | Mean length of consecutive keystroke runs (inter-key gap < 200 ms) | Output fluency — higher = Flow |
 | Pause Count | **F5** | Count of inter-press gaps ≥ 2 000 ms within window | Deliberation frequency |
@@ -198,14 +196,18 @@ X (Cognitive Friction)   = 0.30·φ(F3) + 0.25·φ(F6) + 0.25·φ(F1) + 0.20·φ
 Y (Productive Silence)   = 0.40·φ(F4) + 0.35·(1 − φ(F1)) + 0.25·(1 − φ(F5))
 ```
 
-Both axes are smoothed with an Exponential Weighted Moving Average (α = 0.30):
+Both axes are smoothed with an Exponential Weighted Moving Average:
 ```
-ewma_t = 0.30 · raw_t + 0.70 · ewma_{t−1}
+ewma_t = α · raw_t + (1 − α) · ewma_{t−1}
+
+α = 0.30  (normal typing: update())
+α = 0.15  (silence < 15 s: update_silence())
+α = 0.25  (deep silence ≥ 15 s: update_silence())
 ```
 
 ### Observation Bins
 
-(X, Y) ∈ [0,1]² is discretized into a 5×5 grid (25 bins) plus one penalty bin (obs = 25, triggered by ≥ 8 consecutive Backspace presses):
+(X, Y) ∈ [0,1]² is discretized into a 5×5 grid (25 bins) plus one penalty bin (obs = 25, triggered by ≥ 14 consecutive Backspace presses):
 
 ```
 Cognitive Friction X →  0(low)   1      2      3      4(high)
@@ -263,19 +265,19 @@ display_t = α · raw_t + (1 − α) · display_{t−1}
 **Fix:** `make_silence_observation()` now generates synthetic friction values that increase linearly with silence duration:
 
 ```rust
-// F6 onset at 20 s → reaches 0.50 at 80 s
-F6_synthetic = clamp((silence_secs − 20) / 60,  0.0, 0.50)
+// F6 onset at 8 s → reaches 0.50 at 33 s
+F6_synthetic = clamp((silence_secs − 8) / 50,  0.0, 0.50)
 
-// F3 onset at 30 s → reaches 0.40 at 130 s
-F3_synthetic = clamp((silence_secs − 30) / 100, 0.0, 0.40)
+// F3 onset at 15 s → reaches 0.40 at 47 s
+F3_synthetic = clamp((silence_secs − 15) / 80, 0.0, 0.40)
 ```
 
 | Silence | F3_syn | F6_syn | X (Friction) | x_bin | Region |
 |---|---|---|---|---|---|
-| 20 s | 0.00 | 0.00 | ≈ 0.20 | 1 | Incubation |
-| 30 s | 0.00 | 0.17 | ≈ 0.30 | 1 | Incubation |
-| 40 s | 0.10 | 0.33 | ≈ 0.52 | 2 | Boundary |
-| 50 s | 0.20 | 0.50 | ≈ 0.75 | 3 | **Stuck** |
+| 8 s | 0.00 | 0.00 | ≈ 0.20 | 1 | Incubation |
+| 15 s | 0.00 | 0.14 | ≈ 0.24 | 1 | Incubation |
+| 25 s | 0.13 | 0.34 | ≈ 0.46 | 2 | Boundary |
+| 33 s | 0.23 | 0.50 | ≈ 0.69 | 3 | **Stuck** |
 
 ---
 
@@ -288,7 +290,7 @@ Japanese IME input introduces two distinct challenges for keystroke analysis:
 
 ### Candidate Window Detection: Keystroke State Machine (v2.6)
 
-On macOS, IME candidate window visibility is detected by a **keystroke-driven state machine** in the CGEventTap callback (`hook_macos.rs`). When the candidate window is detected, the HMM engine is **paused** and **forced to Flow state** (`force_flow_state()` sets `[0.98, 0.01, 0.01]`). No additional permissions are required beyond Input Monitoring.
+On macOS, IME candidate window visibility is detected by a **keystroke-driven state machine** in the CGEventTap callback (`hook_macos.rs`). When the candidate window is detected, the HMM engine is **paused** via `set_paused()` — the probability vector is frozen (not reset), preserving the pre-IME state. No additional permissions are required beyond Input Monitoring.
 
 **State machine transitions** (tracked via `IME_COMPOSING` and `IME_ACTIVE` atomics):
 
@@ -348,7 +350,7 @@ The input source ID is checked for `"inputmethod.Japanese"` (covers Apple IME, G
 | Context | `IME_OPEN` | β_F1 (ms) | β_F3 | β_F4 | β_F5 | β_F6 |
 | --- | --- | --- | --- | --- | --- | --- |
 | **β_coding** (A mode) | `false` | 150 | 0.06 | 5.0 | 2.0 | 0.08 |
-| **β_writing** (あ/カ mode) | `true` | 130 | 0.05 | 3.0 | 2.0 | 0.12 |
+| **β_writing** (あ/カ mode) | `true` | 100 | 0.10 | 2.5 | 1.0 | 0.12 |
 
 ---
 
@@ -391,10 +393,10 @@ The polling thread tracks `last_state: Option<bool> = None`, ensuring the **firs
 
 ## 1Hz Timer-Driven Inference & Synthetic Friction (v2.4)
 
-The analysis thread enforces a **1 Hz timer gate** via `recv_timeout(1000 ms)`:
+The analysis thread enforces a **1 Hz timer gate** via a dynamic `recv_timeout` (remaining time until the next 1-second gate):
 
-- **Keystroke arrives within 1 s:** Features accumulated; `engine.update()` called only if ≥ 1 s elapsed since last HMM step.
-- **Timeout:** `make_silence_observation()` generates a synthetic silence observation, processed via `engine.update_silence()` — a variant that runs the HMM forward step with a **low EWMA alpha (0.05)** instead of the normal 0.30, preventing rapid drift toward high-Friction bins while still allowing observation bins to gradually shift toward low-Engagement during prolonged silence (time constant ≈ 20 s).
+- **Keystroke arrives within the gate window:** Features accumulated; `engine.update()` called only if ≥ 1 s elapsed since last HMM step (α = 0.30).
+- **Gate fires with no recent input:** `make_silence_observation()` generates a synthetic silence observation, processed via `engine.update_silence()` — a variant that runs the HMM forward step with a **lower EWMA alpha**: α = 0.15 for silence < 15 s (time constant ≈ 6.6 s), dynamically increasing to α = 0.25 for deep silence ≥ 15 s (time constant ≈ 4 s) to accelerate Stuck convergence.
 
 This ensures exactly **one HMM forward step per second**, making the EMA time constant τ = 1/α ≈ **4 seconds** precise regardless of typing speed.
 
@@ -451,7 +453,7 @@ A `LAST_KEYSTROKE_TIMESTAMP` atomic tracks the most recent keypress. The `get_ke
 
 **Problem:** When a fast typist presses `BS×6 → Enter`, the non-BS key resets `backspace_streak` to 0 before the 1 Hz analysis thread can read it — the penalty is lost.
 
-**Fix:** A one-shot `has_pending_penalty: Arc<AtomicBool>` flag is set at the moment `backspace_streak >= 8`. The flag persists until the next `engine.update()` consumes it via `atomic swap(false)`, decoupling detection from the 1 Hz timer gate.
+**Fix:** A one-shot `has_pending_penalty: Arc<AtomicBool>` flag is set at the moment `backspace_streak >= 14`. The flag persists until the next `engine.update()` consumes it via `atomic swap(false)`, decoupling detection from the 1 Hz timer gate.
 
 ### Emission Floor Removal
 
@@ -491,10 +493,12 @@ Record types:
 // Raw keystroke event
 {"type":"key","t":1740000001234,"vk":65,"press":true}
 
-// Feature snapshot + HMM state probabilities
+// Feature snapshot + HMM state probabilities + internal diagnostics
 {"type":"feat","t":1740000001235,
- "f1":145.20,"f2":312.00,"f3":0.0800,"f4":6.50,"f5":1.0,"f6":0.0000,
- "p_flow":0.7123,"p_inc":0.2100,"p_stuck":0.0777}
+ "f1":145.20,"f3":0.0800,"f4":6.50,"f5":1.0,"f6":0.0000,
+ "p_flow":0.7123,"p_inc":0.2100,"p_stuck":0.0777,
+ "raw_x":0.1200,"raw_y":0.7500,"ewma_x":0.1100,"ewma_y":0.7800,
+ "obs":4,"alpha":0.30}
 
 // IME mode switch
 {"type":"ime_state","t":1740000001234,"on":true}
@@ -593,4 +597,4 @@ Research prototype. All rights reserved.
 
 ---
 
-*Last updated: 2026-03-06*
+*Last updated: 2026-03-07*

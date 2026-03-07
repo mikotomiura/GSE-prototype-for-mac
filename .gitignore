@@ -12,6 +12,7 @@ dist
 dist-ssr
 *.local
 
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -24,6 +25,10 @@ dist-ssr
 *.sw?
 src-tauri/gen/
 src-tauri/target/
+prompt.md
+CLAUDE.md
+
 
 # Claude Code internal files (machine-specific, not for version control)
 .claude/
+docs/
