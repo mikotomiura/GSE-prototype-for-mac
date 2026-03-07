@@ -467,7 +467,7 @@ Lv2 Wall は単純な持続時間チェックではなく、**ヒステリシス
 2. **フック層**（`hook_macos.rs` / 将来の `windows_impl.rs`）：OS 固有のキーコード判定を `InputEvent` 生成時に実行 — macOS: `mac_vk == 0x33 || mac_vk == 0x75`、Windows: `vk_code == 0x08 || vk_code == 0x2E`。
 3. **共通コア**（`features.rs` の F3/F6、`lib.rs` の `register_keystroke`）：全 Backspace/Delete 判定を `event.is_backspace` で参照 — OS 固有キーコードへの依存ゼロ。
 
-`is_typing_key()` 関数はタイピングリズムフィルタリング用途で Windows VK リテラルを保持する（変換済みコードに対して動作し、Backspace のセマンティクスとは無関係）。
+さらに、`is_typing_key()` 関数を `features.rs` から削除し、`hook_macos.rs` 内にネイティブ macOS CGKeyCode（`0x00..=0x09 | 0x0B..=0x33 | 0x75`）を使用するプライベート関数として移植。フック層が非タイピングキーを送信前にフィルタ済みのため、`calculate_features()` での `is_typing_key` チェックは不要となり、共通コアから OS 固有キーコード参照を完全に排除。
 
 ### 放射フロア廃止
 

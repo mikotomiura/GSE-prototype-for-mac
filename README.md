@@ -466,7 +466,7 @@ A `LAST_KEYSTROKE_TIMESTAMP` atomic tracks the most recent keypress. The `get_ke
 2. **Hook layer** (`hook_macos.rs` / planned `windows_impl.rs`): OS-specific keycode comparison is now performed at the point of `InputEvent` creation — macOS: `mac_vk == 0x33 || mac_vk == 0x75`; Windows: `vk_code == 0x08 || vk_code == 0x2E`.
 3. **Common core** (`features.rs` F3/F6, `lib.rs` `register_keystroke`): All backspace/delete detection now reads `event.is_backspace` — zero knowledge of OS-specific keycodes.
 
-The `is_typing_key()` function retains Windows VK literals for typing-rhythm filtering, as it operates on already-mapped codes and is unrelated to the backspace semantic.
+Additionally, `is_typing_key()` was removed from `features.rs` and relocated to `hook_macos.rs` as a private function using native macOS CGKeyCodes (`0x00..=0x09 | 0x0B..=0x33 | 0x75`). Since the hook layer already filters non-typing keys before sending events to the analysis channel, `calculate_features()` no longer needs `is_typing_key` checks — the buffer contains only typing-relevant events by contract. This eliminates all OS-specific keycode references from the common core.
 
 ### Emission Floor Removal
 

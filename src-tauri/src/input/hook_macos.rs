@@ -12,7 +12,7 @@ use core_graphics::event::{
     EventField,
 };
 
-use crate::analysis::features::{InputEvent, is_typing_key};
+use crate::analysis::features::InputEvent;
 use super::{
     EVENT_SENDER, IME_ACTIVE, IME_COMPOSING, IME_OPEN, IME_STATE_DIRTY,
     JIS_KEYBOARD_SEEN, LAST_KEYSTROKE_TIMESTAMP, POLL_WAKE_TX,
@@ -31,6 +31,27 @@ extern "C" {
 /// true when CGEventTap is successfully installed and receiving events.
 /// Read by `get_hook_status` Tauri command to report permission state to the frontend.
 pub static HOOK_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+// ---------------------------------------------------------------------------
+// macOS typing key filter (raw CGKeyCode)
+//
+// フック層でタイピングリズムに影響するキーのみを分析チャネルへ送信する。
+// 矢印キー・ファンクションキー・修飾キー・IMEトグルキーは除外する。
+// 共通コア（features.rs）は「バッファ内のイベントは全てタイピングキー」を前提とする。
+//
+// CGKeyCode レイアウト:
+//   0x00..=0x09: 英字 (A,S,D,F,H,G,Z,X,C,V)
+//   0x0A:        ISO § キー (ANSI キーボードには存在しない — 除外)
+//   0x0B..=0x33: 英字・数字・記号・編集キー (B,Q,W,..,Tab,Space,`,Delete)
+//   0x75:        Forward Delete
+// ---------------------------------------------------------------------------
+fn is_typing_key(mac_vk: u64) -> bool {
+    matches!(mac_vk,
+        0x00..=0x09   // kVK_ANSI_A .. kVK_ANSI_V (letters)
+        | 0x0B..=0x33 // kVK_ANSI_B .. kVK_Delete (letters, digits, symbols, Return, Tab, Space, Backspace)
+        | 0x75        // kVK_ForwardDelete
+    )
+}
 
 // ---------------------------------------------------------------------------
 // macOS CGKeyCode → Windows VK equivalent mapping
@@ -249,7 +270,7 @@ fn handle_event(event_type: CGEventType, event: &CGEvent) {
     //   - F3（修正率）も長押し削除を1回としかカウントしない
     // これは「長押し = 意図的な一括削除 ≠ フラストレーション」という設計判断に基づく。
     // 連打（タップ連射）のみが Stuck シグナルとして検出される。
-    if !is_repeat && is_typing_key(vk_code) {
+    if !is_repeat && is_typing_key(mac_vk) {
         if let Some(sender) = EVENT_SENDER.get() {
             // macOS: kVK_Delete(Backspace) = 0x33, kVK_ForwardDelete = 0x75
             // OS 固有キーコードからフラグを生成し、共通コアにはフラグのみ渡す。

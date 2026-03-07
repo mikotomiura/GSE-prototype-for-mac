@@ -53,26 +53,6 @@ pub fn phi(x: f64, beta: f64) -> f64 {
     ((x - beta) / (KAPPA * beta)).clamp(0.0, 1.0)
 }
 
-/// Flight time 計算に含めるべき「タイピング動作」キーかどうかを判定する。
-/// 矢印キー・IMEモードキー等はタイピングリズムとは無関係なので除外する。
-pub fn is_typing_key(vk: u32) -> bool {
-    matches!(vk,
-        // Letters A-Z
-        0x41..=0x5A
-        // Digits 0-9
-        | 0x30..=0x39
-        // Common punctuation/symbols
-        | 0xBA..=0xC0  // ;=,-./`
-        | 0xDB..=0xDF  // [\]'^
-        // Editing keys (affect typing rhythm)
-        | 0x08  // VK_BACK
-        | 0x0D  // VK_RETURN
-        | 0x20  // VK_SPACE
-        | 0x09  // VK_TAB
-        | 0x2E  // VK_DELETE
-    )
-}
-
 pub struct FeatureExtractor {
     buffer: VecDeque<InputEvent>,
     capacity: usize,
@@ -118,11 +98,12 @@ impl FeatureExtractor {
         }
 
         // --- ウィンドウ内のフライトタイムを計算 (直近30秒) ---
-        // キーリピートと非タイピングキーを除外して flight time を算出する。
+        // キーリピートを除外して flight time を算出する。
+        // 非タイピングキーはフック層で既にフィルタ済みのため、ここではチェック不要。
         let mut window_fts: Vec<f64> = Vec::new();
         let mut last_release: Option<u64> = None;
         for event in &events {
-            if event.is_repeat || !is_typing_key(event.vk_code) {
+            if event.is_repeat {
                 continue;
             }
             if event.is_press {
@@ -171,13 +152,14 @@ impl FeatureExtractor {
         };
 
         // --- F4: バースト長 = 連続FT<200ms のチャンクの平均文字数 ---
-        // キーリピートと非タイピングキーを除外してバースト計算する。
+        // キーリピートを除外してバースト計算する。
+        // 非タイピングキーはフック層で既にフィルタ済みのため、ここではチェック不要。
         let mut burst_lengths: Vec<usize> = Vec::new();
         let mut current_burst: usize = 0;
         let mut last_rel_for_burst: Option<u64> = None;
 
         for event in &events {
-            if event.is_repeat || !is_typing_key(event.vk_code) {
+            if event.is_repeat {
                 continue;
             }
             if event.is_press {
