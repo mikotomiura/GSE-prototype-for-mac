@@ -377,12 +377,8 @@ pub fn run() {
                     if event.is_press {
                         // 全打鍵でBackspaceストリークをカウント（1Hz gate の外側）。
                         // engine.update() は1Hzだがストリーク検知は全打鍵で正確にカウントする。
-                        // OS別 Backspace 判定:
-                        //   Windows: VK_BACK = 0x08
-                        //   macOS: macos_vk_to_vk() が 0x33→0x08 に変換済み
-                        // engine 層にはOS固有キーコードを渡さず、bool で抽象化する。
-                        let is_backspace = event.vk_code == 0x08;
-                        engine_for_thread.register_keystroke(is_backspace);
+                        // is_backspace フラグはフック層で OS 固有キーコードから判定済み。
+                        engine_for_thread.register_keystroke(event.is_backspace);
 
                         // Fix 2: silence-break protection.
                         // 深い沈黙（>10秒）中は、単発キーで last_event_time をリセットせず、

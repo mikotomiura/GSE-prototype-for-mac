@@ -459,9 +459,14 @@ A `LAST_KEYSTROKE_TIMESTAMP` atomic tracks the most recent keypress. The `get_ke
 
 ### Cross-Platform Backspace Detection Refactor (v3.1)
 
-**Problem:** `engine.register_keystroke(vk_code)` compared against the Windows-specific constant `0x08` (`VK_BACK`) directly inside the HMM engine. While macOS worked correctly (due to `macos_vk_to_vk()` translating `0x33→0x08` upstream), this constituted an implicit OS dependency in what should be a platform-neutral inference layer.
+**Problem:** The platform-neutral common core (`features.rs`, `lib.rs`) contained hardcoded Windows virtual key codes (`VK_BACK = 0x08`, `VK_DELETE = 0x2E`) for backspace/delete detection. While macOS worked correctly (due to `macos_vk_to_vk()` translating keycodes upstream), this constituted an architectural violation — OS-specific constants embedded in what should be a platform-neutral inference layer.
 
-**Fix:** Changed the signature from `register_keystroke(vk_code: u32)` to `register_keystroke(is_backspace: bool)`. The OS-specific Backspace key code comparison (`vk_code == 0x08`) is now performed at the call site in `lib.rs` (the input event layer), keeping the HMM engine fully platform-neutral. No behavioral change — the mathematical model and all thresholds remain identical.
+**Fix:** Three-layer refactoring:
+1. **`InputEvent` struct** (`features.rs`): Added `is_backspace: bool` semantic flag. Removed `VK_BACK`/`VK_DELETE` constants entirely from the common core.
+2. **Hook layer** (`hook_macos.rs` / planned `windows_impl.rs`): OS-specific keycode comparison is now performed at the point of `InputEvent` creation — macOS: `mac_vk == 0x33 || mac_vk == 0x75`; Windows: `vk_code == 0x08 || vk_code == 0x2E`.
+3. **Common core** (`features.rs` F3/F6, `lib.rs` `register_keystroke`): All backspace/delete detection now reads `event.is_backspace` — zero knowledge of OS-specific keycodes.
+
+The `is_typing_key()` function retains Windows VK literals for typing-rhythm filtering, as it operates on already-mapped codes and is unrelated to the backspace semantic.
 
 ### Emission Floor Removal
 
@@ -605,4 +610,4 @@ Research prototype. All rights reserved.
 
 ---
 
-*Last updated: 2026-03-07*
+*Last updated: 2026-03-08*

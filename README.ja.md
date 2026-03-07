@@ -460,9 +460,14 @@ Lv2 Wall は単純な持続時間チェックではなく、**ヒステリシス
 
 ### クロスプラットフォーム Backspace 検出リファクタリング（v3.1）
 
-**問題：** `engine.register_keystroke(vk_code)` が HMM エンジン内部で Windows 固有の定数 `0x08`（`VK_BACK`）と直接比較していた。macOS では `macos_vk_to_vk()` が上流で `0x33→0x08` に変換するため動作上の問題はなかったが、プラットフォーム中立であるべき推論層に暗黙の OS 依存が混入していた。
+**問題：** プラットフォーム中立であるべき共通コア（`features.rs`、`lib.rs`）に Windows 固有の仮想キーコード（`VK_BACK = 0x08`、`VK_DELETE = 0x2E`）がハードコードされていた。macOS では `macos_vk_to_vk()` が上流で変換するため動作上の問題はなかったが、推論層に OS 固有の定数が混入するアーキテクチャ違反であった。
 
-**修正：** シグネチャを `register_keystroke(vk_code: u32)` から `register_keystroke(is_backspace: bool)` に変更。OS 固有の Backspace キーコード比較（`vk_code == 0x08`）は `lib.rs`（入力イベント層）の呼び出し側で実行し、HMM エンジンを完全にプラットフォーム中立に保つ。動作変更なし — 数学モデルと全閾値は同一。
+**修正：** 三層リファクタリング：
+1. **`InputEvent` 構造体**（`features.rs`）：意味的フラグ `is_backspace: bool` を追加。`VK_BACK`/`VK_DELETE` 定数を共通コアから完全削除。
+2. **フック層**（`hook_macos.rs` / 将来の `windows_impl.rs`）：OS 固有のキーコード判定を `InputEvent` 生成時に実行 — macOS: `mac_vk == 0x33 || mac_vk == 0x75`、Windows: `vk_code == 0x08 || vk_code == 0x2E`。
+3. **共通コア**（`features.rs` の F3/F6、`lib.rs` の `register_keystroke`）：全 Backspace/Delete 判定を `event.is_backspace` で参照 — OS 固有キーコードへの依存ゼロ。
+
+`is_typing_key()` 関数はタイピングリズムフィルタリング用途で Windows VK リテラルを保持する（変換済みコードに対して動作し、Backspace のセマンティクスとは無関係）。
 
 ### 放射フロア廃止
 
@@ -620,4 +625,4 @@ npm run tauri build
 
 ---
 
-*最終更新：2026-03-07*
+*最終更新：2026-03-08*

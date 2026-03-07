@@ -69,7 +69,7 @@ Two Tauri windows: `main` (Dashboard) and `overlay` (transparent, always-on-top,
 
 - Engine is 1Hz-calibrated: `engine.update()` must be called at most once per second
 - All VK codes are normalized to Windows equivalents internally (macOS CGKeyCode → Windows VK in `macos_vk_to_vk()`)
-- `engine.register_keystroke(is_backspace: bool)` — engine layer is platform-neutral; OS-specific VK_BACK detection (`0x08`) is done at the call site in `lib.rs`
+- `engine.register_keystroke(is_backspace: bool)` — engine layer is platform-neutral; OS-specific backspace detection is done at the hook layer (`hook_macos.rs` / `windows_impl.rs`) and propagated via `InputEvent.is_backspace`
 - Backspace streak ≥ 14 triggers penalty bin (obs=25) with separate hysteresis alpha (0.60)
 - Dual baseline: `beta_coding` (IME off) vs `beta_writing` (IME on) with different reference values
 - Emission table entries have baked-in minimum of 0.01 (no runtime additive floor)

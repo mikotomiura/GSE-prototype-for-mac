@@ -251,11 +251,15 @@ fn handle_event(event_type: CGEventType, event: &CGEvent) {
     // 連打（タップ連射）のみが Stuck シグナルとして検出される。
     if !is_repeat && is_typing_key(vk_code) {
         if let Some(sender) = EVENT_SENDER.get() {
+            // macOS: kVK_Delete(Backspace) = 0x33, kVK_ForwardDelete = 0x75
+            // OS 固有キーコードからフラグを生成し、共通コアにはフラグのみ渡す。
+            let is_backspace = mac_vk == 0x33 || mac_vk == 0x75;
             let _ = sender.try_send(InputEvent {
                 vk_code,
                 timestamp,
                 is_press,
                 is_repeat,
+                is_backspace,
             });
         }
     }

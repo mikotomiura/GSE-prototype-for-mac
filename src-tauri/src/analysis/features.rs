@@ -9,6 +9,11 @@ pub struct InputEvent {
     /// キーリピートは press のみ連射され release が出ないため、
     /// flight time 計算から除外する必要がある。
     pub is_repeat: bool,
+    /// Backspace または Delete キーかどうか。
+    /// OS 固有のキーコード判定はフック層で行い、共通コアはこのフラグのみを参照する。
+    /// Windows: VK_BACK(0x08) || VK_DELETE(0x2E)
+    /// macOS: kVK_Delete(0x33) || kVK_ForwardDelete(0x75)
+    pub is_backspace: bool,
 }
 
 /// B-1: 5特徴量を格納する構造体 (F1,F3,F4,F5,F6; F2は未使用のため削除)
@@ -47,10 +52,6 @@ pub fn phi(x: f64, beta: f64) -> f64 {
     }
     ((x - beta) / (KAPPA * beta)).clamp(0.0, 1.0)
 }
-
-// Virtual key codes
-const VK_BACK: u32 = 0x08;
-const VK_DELETE: u32 = 0x2E;
 
 /// Flight time 計算に含めるべき「タイピング動作」キーかどうかを判定する。
 /// 矢印キー・IMEモードキー等はタイピングリズムとは無関係なので除外する。
@@ -160,7 +161,7 @@ impl FeatureExtractor {
 
         // --- F3: 修正率 = (BS + Del) / 全キー押下数 ---
         let correction_keys = press_events.iter()
-            .filter(|e| e.vk_code == VK_BACK || e.vk_code == VK_DELETE)
+            .filter(|e| e.is_backspace)
             .count();
 
         let f3 = if total_keys > 0 {
@@ -219,15 +220,14 @@ impl FeatureExtractor {
 
         // --- F6: 削除後停止率 = BS/Del直後に2秒以上停止する割合 ---
         let del_count = press_events.iter()
-            .filter(|e| e.vk_code == VK_BACK || e.vk_code == VK_DELETE)
+            .filter(|e| e.is_backspace)
             .count();
 
         // 連続するキー押下ペアで、先頭がBS/Del かつ間隔>=2sのものを数える
         let del_followed_by_pause = press_ts.windows(2).zip(press_events.windows(2))
             .filter(|(ts_win, ev_win)| {
-                let is_del = ev_win[0].vk_code == VK_BACK || ev_win[0].vk_code == VK_DELETE;
                 let long_pause = ts_win[1].saturating_sub(ts_win[0]) >= 2000;
-                is_del && long_pause
+                ev_win[0].is_backspace && long_pause
             })
             .count();
 
