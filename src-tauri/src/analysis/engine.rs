@@ -199,8 +199,8 @@ impl CognitiveStateEngine {
     /// 非BSキーで streak がリセットされても、フラグは update() で消費されるまで保持される。
     /// これにより「BS×12 → 即Enter」のようなケースでもペナルティを取りこぼさない。
     /// 閾値14: 日本語IME入力での変換修正（8-12連打が正常）での誤発火を防止。
-    pub fn register_keystroke(&self, vk_code: u32) {
-        if vk_code == 0x08 {
+    pub fn register_keystroke(&self, is_backspace: bool) {
+        if is_backspace {
             let new_streak = self.backspace_streak.fetch_add(1, Ordering::Relaxed) + 1;
             if new_streak >= 14 {
                 self.has_pending_penalty.store(true, Ordering::Release);

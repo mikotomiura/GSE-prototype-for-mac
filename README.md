@@ -274,10 +274,12 @@ F3_synthetic = clamp((silence_secs − 15) / 80, 0.0, 0.40)
 
 | Silence | F3_syn | F6_syn | X (Friction) | x_bin | Region |
 |---|---|---|---|---|---|
-| 8 s | 0.00 | 0.00 | ≈ 0.20 | 1 | Incubation |
-| 15 s | 0.00 | 0.14 | ≈ 0.24 | 1 | Incubation |
-| 25 s | 0.13 | 0.34 | ≈ 0.46 | 2 | Boundary |
-| 33 s | 0.23 | 0.50 | ≈ 0.69 | 3 | **Stuck** |
+| 8 s | 0.00 | 0.00 | ≈ 0.35 | 1 | Incubation |
+| 15 s | 0.20 | 0.15 | ≈ 0.86 | 4 | **Stuck** |
+| 25 s | 0.20 | 0.34 | ≈ 1.00 | 4 | **Stuck** |
+| 33 s | 0.23 | 0.50 | ≈ 1.00 | 4 | **Stuck** |
+
+> **Note:** At silence ≥ 10 s, friction floors are applied (F3 ≥ 0.20, F6 ≥ 0.15) to prevent auto-recovery from Stuck during sustained silence. Combined with F1 = 2000 ms (φ₁ = 1.0) and high F5, Stuck is reached by ~15 s.
 
 ---
 
@@ -454,6 +456,12 @@ A `LAST_KEYSTROKE_TIMESTAMP` atomic tracks the most recent keypress. The `get_ke
 **Problem:** When a fast typist presses `BS×6 → Enter`, the non-BS key resets `backspace_streak` to 0 before the 1 Hz analysis thread can read it — the penalty is lost.
 
 **Fix:** A one-shot `has_pending_penalty: Arc<AtomicBool>` flag is set at the moment `backspace_streak >= 14`. The flag persists until the next `engine.update()` consumes it via `atomic swap(false)`, decoupling detection from the 1 Hz timer gate.
+
+### Cross-Platform Backspace Detection Refactor (v3.1)
+
+**Problem:** `engine.register_keystroke(vk_code)` compared against the Windows-specific constant `0x08` (`VK_BACK`) directly inside the HMM engine. While macOS worked correctly (due to `macos_vk_to_vk()` translating `0x33→0x08` upstream), this constituted an implicit OS dependency in what should be a platform-neutral inference layer.
+
+**Fix:** Changed the signature from `register_keystroke(vk_code: u32)` to `register_keystroke(is_backspace: bool)`. The OS-specific Backspace key code comparison (`vk_code == 0x08`) is now performed at the call site in `lib.rs` (the input event layer), keeping the HMM engine fully platform-neutral. No behavioral change — the mathematical model and all thresholds remain identical.
 
 ### Emission Floor Removal
 
